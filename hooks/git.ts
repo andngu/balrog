@@ -94,10 +94,10 @@ function hashOf(text: string): string {
   return h.toString(16).padStart(8, '0')
 }
 
-// The run's directory holds the worktree and the mod's own files beside it,
-// under a per-user cache root the mod keeps at mode 0700: no other local user
-// can pre-create or swap a path there, and a relative escape from the
-// worktree reaches nothing of the user's repository.
+// The run's directory holds the worktree alone, under a per-user cache root
+// the mod keeps at mode 0700: no other local user can pre-create or swap a
+// path there, and a relative escape from the worktree reaches nothing of the
+// user's repository.
 export async function runDirectory(facts: RepoFacts, runId: string): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
   const cache = (await io().cacheHome()) || `${(await io().home()) ?? ''}/.cache`
   if (!cache.startsWith('/')) return { ok: false, reason: 'neither XDG_CACHE_HOME nor HOME names an absolute directory' }
@@ -127,7 +127,9 @@ export async function addWorktree(facts: RepoFacts, path: string): Promise<{ ok:
 }
 
 export async function removeWorktree(run: Run): Promise<Ran> {
-  return git(run.repo, 'worktree', 'remove', '--force', run.worktree)
+  const removed = await git(run.repo, 'worktree', 'remove', '--force', run.worktree)
+  if (removed.ok) await exec(['rmdir', run.worktree.replace(/\/[^/]*$/, '')], '/')
+  return removed
 }
 
 // The worktree is the one place an agent writes, so before git reads it the
