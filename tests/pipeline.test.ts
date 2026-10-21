@@ -397,6 +397,17 @@ test('Fix selected sends only the toggled findings, commits the fix, then re-run
   expect(w.spawns[2]!.prompt).toContain('the human chose to fix for findings r1')
 })
 
+test('Fix selected starts without the findings that do not block', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', answer([
+    { id: 'r1', severity: 'error', action: 'auto-fix', description: 'off by one' },
+    { id: 'r2', severity: 'info', action: 'no-op', description: 'comment style' },
+  ]))
+  await pressOnce($, 'fix')
+  expect(lastRun(w).decisions).toEqual([{ step: 'review', findingIds: ['r1'], verdict: 'fix' }])
+})
+
 test('Skip and Abort are recorded; Abort removes the worktree', async ($, on) => {
   const w = world($, on)
   await start($)

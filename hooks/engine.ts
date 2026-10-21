@@ -2,7 +2,7 @@ import type { FollowUp, Outcome, Run, StepName, StepState, Verdict } from '../ty
 import * as git from './git'
 import { io } from './io'
 import { fixPrompt, reaskPrompt, UNTRUSTED_NOTE, untrusted } from './prompts'
-import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, report, setStep, skipRest, statusText, timeoutFinding } from './run'
+import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isBlocking, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, report, setStep, skipRest, statusText, timeoutFinding } from './run'
 import { AGENT_STEPS, commitMessage, FIXER, pollCi, spawn, STEP_DEFS } from './steps'
 import type { StepOutcome } from './steps'
 
@@ -126,7 +126,7 @@ async function settle(name: StepName, outcome: StepOutcome, from: From): Promise
       await finish('failed', `${name} failed: ${state.reason}`)
       return 'wait'
     case 'parked':
-      await io().writeSelected(() => state.findings.map(f => f.id))
+      await io().writeSelected(() => state.findings.filter(isBlocking).map(f => f.id))
       await io().notify(`parked at ${name}: ${state.findings.length} finding(s) need your call`)
       return 'wait'
     case 'running':
