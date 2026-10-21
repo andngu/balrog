@@ -2,7 +2,7 @@ import type { Outcome, Run, StepName, StepState, Verdict } from '../types'
 import * as git from './git'
 import { io } from './io'
 import { fixPrompt, reaskPrompt } from './prompts'
-import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isClaimed, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, setStep, skipRest, statusText, timeoutFinding } from './run'
+import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, setStep, skipRest, statusText, timeoutFinding } from './run'
 import { AGENT_STEPS, commitMessage, FIXER, pollCi, spawn, STEP_DEFS } from './steps'
 import type { StepOutcome } from './steps'
 
@@ -95,14 +95,17 @@ function apply(run: Run, name: StepName, outcome: StepOutcome): Run {
 type From = (state: StepState) => boolean
 
 // One conditional write: the change lands only while the step is still in
-// the state the caller observed, and only once. Every transition goes here.
+// the state the caller observed, and only once. Every transition goes here,
+// so here an agent the step moves away from is retired.
 async function claim(name: StepName, from: From, change: (run: Run) => Run): Promise<Run | undefined> {
   let won = false
   const run = await io().writeRun(r => {
     won = false
     if (!r || r.outcome || currentStep(r) !== name || !from(r.steps[name])) return r
     won = true
-    return change(r)
+    const next = change(r)
+    const gone = agentOf(r.steps[name])
+    return gone !== undefined && gone !== agentOf(next.steps[name]) ? { ...next, retired: [...(next.retired ?? []), gone] } : next
   })
   return won && run ? run : undefined
 }
@@ -169,6 +172,7 @@ export async function onAgentAnswer(agentId: string, answer: string, reason: str
   const name = currentStep(run)
   if (!name) return
   const state = run.steps[name]
+  if (isRetired(run, agentId)) return
   if (agentOf(state) !== agentId) {
     if (isClaimed(state) && (await ownerOf(run, agentId)) !== 'not-ours') {
       if (early.size >= EARLY_MAX) early.delete(early.keys().next().value!)
@@ -282,12 +286,21 @@ async function tick(): Promise<void> {
   const now = await io().now()
   if (isAgentDriven(state) && now - state.startedAt > AGENT_TIMEOUT_MS) {
     const { agentId } = state
+    // The step is taken from the agent before it is stopped: the stop ends its
+    // turn as aborted, and that answer must find the step no longer its own.
+    const taken = await claim(name, s => agentOf(s) === agentId, r => setStep(r, name, { status: 'starting', startedAt: now }))
+    if (!taken) return
     await stopAgent(agentId)
-    // What the agent changed is its step's, as if it had answered; left in the
-    // tree it would land in a later step's commit, or be put back by prepare.
-    const committed = (await stillRunning(run)).length === 0 ? await git.commitAll(run, commitMessage(name, state)) : { kind: 'clean' as const }
-    const step: StepState = committed.kind === 'error' ? { status: 'failed', reason: committed.isSetup ? `${name}: ${committed.detail}` : `${name}: the timed-out agent's edits could not be committed: ${committed.detail}` } : { status: 'parked', findings: [timeoutFinding(name)] }
-    await settle(name, { step }, s => agentOf(s) === agentId)
+    let step: StepState
+    if ((await stillRunning(taken)).includes(agentId)) {
+      step = { status: 'failed', reason: `the ${name} agent ran 30 minutes without answering and could not be stopped; it may still write to the worktree, so the run stops here` }
+    } else {
+      // What the agent changed is its step's, as if it had answered; left in
+      // the tree it would land in a later step's commit, or be put back by prepare.
+      const committed = await git.commitAll(taken, commitMessage(name, state))
+      step = committed.kind === 'error' ? { status: 'failed', reason: committed.isSetup ? `${name}: ${committed.detail}` : `${name}: the timed-out agent's edits could not be committed: ${committed.detail}` } : { status: 'parked', findings: [timeoutFinding(name)] }
+    }
+    await settle(name, { step }, isClaimed)
     return
   }
   // A claim whose owner never settled it (the actor died mid-effect).

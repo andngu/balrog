@@ -60,6 +60,7 @@ type World = {
   recordFails: boolean
   sends: { to: string; text: string }[]
   sendFails: boolean
+  stopAborts: boolean
   pane: (surface: RenderSurface) => Promise<string>
 }
 
@@ -98,6 +99,7 @@ function world($: Engine, on: On, options: Options = {}): World {
     recordFails: false,
     sends: [],
     sendFails: false,
+    stopAborts: false,
     pane: async surface => {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
       const texts = (await ui.findAll({ type: 'Text' })).map(found => found.text)
@@ -171,12 +173,14 @@ function world($: Engine, on: On, options: Options = {}): World {
     if (options.dangling?.includes(e.path.split('/').pop() ?? '')) return { value: { kind: 'other' as const, size: 0, mtimeMs: 0, isLink: true } }
     return { value: { kind: 'file' as const, size: 1, mtimeMs: 0, isLink: real !== e.path, realPath: real } }
   })
-  on('tool.call', (_$, e) => {
+  on('tool.call', async (_$, e) => {
     w.ran.push(e.tool)
     if (e.tool === 'TaskStop') {
       const id = String((e as unknown as { task_id?: string }).task_id)
       w.stops.push(id)
       if (!w.stopFails) w.status[id] = 'killed'
+      // As the engine does: a stopped agent's turn ends, as aborted.
+      if (w.stopAborts) await $.turn.complete({ agentId: id, answer: '', reason: 'aborted', durationMs: 1, isAborted: true, turnId: `stop-${id}` })
     }
     return { result: 'ran' }
   })
@@ -1760,4 +1764,81 @@ test('R6-2: when every check is skipped, ci parks on no CI check ran within minu
   expect(run.steps.ci).toMatchObject({ status: 'parked', findings: [{ id: 'ci:no-checks', severity: 'warning', action: 'ask-user', description: expect.stringContaining('(2 skipped)') }] })
   expect(run.outcome).toBeUndefined()
   expect(await w.pane('terminal')).toContain('Parked at ci')
+})
+
+test('R6-3: only the current step\'s agent acts; an agent whose step moved on, and every agent once the run ends, is refused', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  const wt = lastRun(w).worktree
+  expect(lastRun(w).steps.document).toMatchObject({ status: 'running', agentId: 'agent-2' })
+  expect(isDenied(await toolCall($, 'agent-2', { tool: 'Read', file_path: `${wt}/a.ts` }))).toBe(false)
+  expect(isDenied(await toolCall($, 'agent-1', { tool: 'Read', file_path: `${wt}/a.ts` }))).toBe(true)
+  expect(isDenied(await toolCall($, 'agent-1', { tool: 'Write', file_path: `${wt}/a.ts`, content: 'x' }))).toBe(true)
+  expect((await toolCheck($, 'agent-1', 'Read', { file_path: `${wt}/a.ts` })).decision).not.toBe('allow')
+  await pressOnce($, 'abort')
+  expect(lastRun(w).outcome).toBe('aborted')
+  expect(isDenied(await toolCall($, 'agent-2', { tool: 'Read', file_path: `${wt}/a.ts` }))).toBe(true)
+})
+
+test('R6-3: a timed-out agent that cannot be stopped fails the run, keeps the worktree, and keeps no access', async ($, on) => {
+  const w = world($, on)
+  w.stopFails = true
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  w.dirty = true
+  await w.clock.advance(31 * 60_000)
+  const run = lastRun(w)
+  expect(run.steps.document).toMatchObject({ status: 'failed', reason: expect.stringContaining('could not be stopped') })
+  expect(run.outcome).toBe('failed')
+  expect(w.calls.some(c => c.startsWith('git commit'))).toBe(false)
+  expect(w.calls.some(c => c.startsWith('git worktree remove'))).toBe(false)
+  expect(isDenied(await toolCall($, 'agent-2', { tool: 'Write', file_path: `${run.worktree}/a.ts`, content: 'x' }))).toBe(true)
+})
+
+test('R6-4: the aborted turn a timeout stop causes does not fail the step; it parks on the timeout', async ($, on) => {
+  const w = world($, on)
+  w.stopAborts = true
+  await start($)
+  await w.clock.advance(31 * 60_000)
+  const run = lastRun(w)
+  expect(w.stops).toEqual(['agent-1'])
+  expect(run.steps.review).toMatchObject({ status: 'parked', findings: [{ id: 'review:timeout' }] })
+  expect(run.outcome).toBeUndefined()
+})
+
+test('R6-4: an answer racing the timeout never commits at the same time as it', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  // A commit runs from its `git add -u` to its `git diff --cached --quiet`.
+  let open = 0
+  let most = 0
+  let release: (() => void) | undefined
+  const held = new Promise<void>(r => { release = r })
+  let hold = false
+  w.rules.push(async line => {
+    if (line === 'git add -u') {
+      most = Math.max(most, ++open)
+      if (hold) {
+        hold = false
+        await held
+      }
+    }
+    if (line === 'git diff --cached --quiet') open--
+    return undefined
+  })
+  await w.clock.advance(29 * 60_000 + 59_000)
+  const before = w.calls.filter(c => c === 'git add -u').length
+  hold = true
+  const answered = complete($, 'agent-2', answer([]))
+  await new Promise<void>(r => setTimeout(r, 20))
+  await w.clock.advance(60_000)
+  await new Promise<void>(r => setTimeout(r, 20))
+  release!()
+  await answered
+  for (let i = 0; i < 100 && lastRun(w).steps.document.status !== 'parked'; i++) await new Promise<void>(r => setTimeout(r, 5))
+  expect(lastRun(w).steps.document).toMatchObject({ status: 'parked', findings: [{ id: 'document:timeout' }] })
+  expect(w.calls.filter(c => c === 'git add -u')).toHaveLength(before + 2)
+  expect(most).toBe(1)
 })

@@ -62,6 +62,10 @@ export function agentOf(state: StepState): string | undefined {
   return state.status === 'running' || state.status === 'fixing' ? state.agentId : undefined
 }
 
+export function isRetired(run: Run, agentId: string): boolean {
+  return run.outcome !== undefined || (run.retired?.includes(agentId) ?? false)
+}
+
 export function isClaimed(state: StepState): boolean {
   return state.status === 'starting' || (state.status === 'fixing' && state.agentId === undefined)
 }

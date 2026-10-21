@@ -6,7 +6,7 @@ import { onAgentAnswer, ownerOf, resume, startRun } from './engine'
 import { asCall, isAllowed, judge, writtenPath } from './guard'
 import { bind, io } from './io'
 import { registerPane } from './pane'
-import { knownAgents, PANE, statusText } from './run'
+import { isRetired, knownAgents, PANE, statusText } from './run'
 import { AGENT_SPECS, FIXER, REVIEWER } from './steps'
 
 // The state library's scan needs each atom written in the file that reads it.
@@ -74,6 +74,9 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     const owner = await ownerOfCall(await read($, runAtom), e.agentId)
     if (!owner) return next(e)
+    // Only the current step's agent acts: one whose step moved on (timed out
+    // and could not be stopped, say) keeps no access, nor any once the run ends.
+    if (isRetired(owner.run, e.agentId!)) return { deny: 'no-mistakes: this agent\'s step is over, so it may not act in the run any more' }
     const call = asCall(e)
     const stat = (path: string) => $.fs.stat(path, { resolve: true })
     const reason = await judge(call, owner.run.worktree, owner.run.commands, stat)
@@ -107,7 +110,7 @@ export const register: Register = on => {
     const verdict = await next(e)
     if (e.agentId === undefined || isUsersVerdict(verdict) || e.ceiling !== undefined) return verdict
     const owner = await ownerOfCall(await read($, runAtom), e.agentId)
-    if (!owner || owner.owned !== 'ours') return verdict
+    if (!owner || owner.owned !== 'ours' || isRetired(owner.run, e.agentId)) return verdict
     const allowed = await isAllowed(asCall(e), owner.run.worktree, owner.run.commands, path => $.fs.stat(path, { resolve: true }))
     return allowed ? { decision: 'allow', reason: 'no-mistakes: inside the run worktree' } : verdict
   }).catch(($, e, next) => next(e))

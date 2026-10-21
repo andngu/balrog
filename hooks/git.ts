@@ -387,7 +387,17 @@ export type Committed = { kind: 'clean' } | { kind: 'committed'; head: string } 
 // the untracked files only those a run agent wrote (`run.written`) and the
 // repository does not ignore. What a command leaves behind (node_modules,
 // coverage, caches) stays out, and the user's own excludes still apply.
-export async function commitAll(run: Run, message: string): Promise<Committed> {
+// Commits run one at a time: an answer's and a timeout's would otherwise race
+// on the worktree's index.lock.
+let committing: Promise<unknown> = Promise.resolve()
+
+export function commitAll(run: Run, message: string): Promise<Committed> {
+  const done = committing.then(() => commitOnce(run, message))
+  committing = done.catch(() => undefined)
+  return done
+}
+
+async function commitOnce(run: Run, message: string): Promise<Committed> {
   const tracked = await wt(run, 'add', '-u')
   if (!tracked.ok) return { kind: 'error', detail: tracked.err }
   if (run.written?.length) {

@@ -62,6 +62,9 @@ export type Run = {
   // push step found them.
   commits?: string
   agents: string[]
+  // Agents whose step has moved on: their answers are ignored and every tool
+  // call they make is refused, as is every run agent's once the run ends.
+  retired?: string[]
   steps: Record<StepName, StepState>
   decisions: Decision[]
   prUrl?: string
