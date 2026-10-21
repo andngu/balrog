@@ -47,7 +47,7 @@ While a step is parked, `/no-mistakes-status` lists every finding in full: its i
 
 ## Run record
 
-The mod keeps a record of the run on disk, in `~/.cache/no-mistakes/<name>-<hash>/`, the directory that holds the run's worktree. `latest.json` holds the current run as stored, rewritten on every change of its state. `history.jsonl` gets one line per finished run: the final run with an `endedAt` time in milliseconds, written once its follow-ups are known. Both files hold agent-written text (the findings, the note) as data, so a program that reads them must treat it so. A write that fails is dropped without a word; it never fails the run or changes a step. A run stored by an earlier version of the mod has no record directory and writes none.
+The mod keeps a record of the run on disk, in `~/.cache/no-mistakes/<name>-<hash>/`, the directory that holds the run's worktree. `latest.json` holds the current run as stored, rewritten on every change of its state. `history.jsonl` gets one line per finished run: the final run with an `endedAt` time in milliseconds, written once its follow-ups are known. The mod appends by reading the file and writing it back whole, so a crash in the middle of that write can lose the file's tail. Both files hold agent-written text (the findings, the note) as data, so a program that reads them must treat it so. A write that fails is dropped without a word; it never fails the run or changes a step. A run stored by an earlier version of the mod has no record directory and writes none.
 
 ## Who runs what
 
