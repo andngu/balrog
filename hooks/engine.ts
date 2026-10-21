@@ -1,7 +1,7 @@
 import type { Outcome, Run, StepName, StepState, Verdict } from '../types'
 import * as git from './git'
 import { io } from './io'
-import { fixPrompt, reaskPrompt } from './prompts'
+import { fixPrompt, reaskPrompt, UNTRUSTED_NOTE, untrusted } from './prompts'
 import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, setStep, skipRest, statusText, timeoutFinding } from './run'
 import { AGENT_STEPS, commitMessage, FIXER, pollCi, spawn, STEP_DEFS } from './steps'
 import type { StepOutcome } from './steps'
@@ -81,7 +81,9 @@ export async function startRun(args: string): Promise<string> {
   await showStatus()
   await advance()
   const after = await io().readRun()
-  if (after?.id === id && after.outcome) return `no-mistakes run ${id} ${after.outcome}: ${after.note}`
+  // The note can quote the branch (a conflict names its commit subjects), and
+  // this text reaches the main session's model, so it goes in as data.
+  if (after?.id === id && after.outcome) return `no-mistakes run ${id} ${after.outcome}. ${UNTRUSTED_NOTE}\n${untrusted('run note', after.note ?? '')}`
   return `no-mistakes run ${id} started on ${facts.branch} (base ${facts.base}) in ${worktree.path}. The pane shows its progress.`
 }
 
