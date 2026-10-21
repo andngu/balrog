@@ -2209,3 +2209,22 @@ for (const tail of ['version: 1\n', '---\n']) {
     expect(lastRun(w).commands).toEqual({ test: 'npm test', lint: 'npm run lint' })
   })
 }
+
+test('a run stored before review.exclude existed survives a Fix press and the next steps starting', async ($, on) => {
+  const w = world($, on, { legacy: true })
+  await start($)
+  await complete($, 'agent-1', answer([{ id: 'r1', severity: 'error', action: 'auto-fix', description: 'off by one' }]))
+  await pressOnce($, 'fix')
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'fixing', agentId: 'agent-2' })
+  w.dirty = true
+  w.worktreeHead = FIXED
+  await complete($, 'agent-2', 'Fixed.')
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-3' })
+  await complete($, 'agent-3', answer([]))
+  const run = lastRun(w)
+  expect(run.exclude).toBeUndefined()
+  expect(run.outcome).toBeUndefined()
+  expect(run.steps.test).toMatchObject({ status: 'passed' })
+  expect(run.steps.document).toMatchObject({ status: 'running', agentId: 'agent-4' })
+  expect(w.calls.some(c => c.includes(':(exclude)'))).toBe(false)
+})
