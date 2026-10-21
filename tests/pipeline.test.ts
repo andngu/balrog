@@ -256,7 +256,7 @@ function world($: Engine, on: On, options: Options = {}): World {
   })
   on('state.set', { plugin: PLUGIN, key: 'run' }, (_$, e, next) => {
     if (w.recordFails && e.value?.written?.length) return { deny: 'the state store is full' }
-    const value = options.legacy && e.value ? (({ exclude: _, ...rest }) => rest as Run)(e.value) : e.value
+    const value = options.legacy && e.value ? (({ exclude: _, autofix: __, ...rest }) => rest as Run)(e.value) : e.value
     if (value) w.runs.push(value)
     return next({ ...e, value })
   })
@@ -2472,3 +2472,45 @@ test('a run stored before review.exclude existed survives a Fix press and the ne
   expect(run.steps.document).toMatchObject({ status: 'running', agentId: 'agent-4' })
   expect(w.calls.some(c => c.includes(':(exclude)'))).toBe(false)
 })
+
+const AUTOFIX_VALUES = [
+  ['autofix: true\n', true],
+  ['autofix: true # mechanical fixes\n', true],
+  ['autofix: false\n', false],
+  ['autofix: ~\n', false],
+  ['autofix: null\n', false],
+  ['autofix:\n', false],
+  ['', false],
+] as const
+
+for (const [config, autofix] of AUTOFIX_VALUES) {
+  test(`${JSON.stringify(config)} after commands: reads autofix as ${autofix}`, async ($, on) => {
+    const w = world($, on, { config: `${CONFIG}${config}` })
+    await start($)
+    expect(lastRun(w).steps.rebase).toMatchObject({ status: 'passed' })
+    expect(lastRun(w).autofix).toBe(autofix)
+    expect(lastRun(w).commands).toEqual({ test: 'npm test', lint: 'npm run lint' })
+  })
+}
+
+const BAD_AUTOFIX_CONFIGS = [
+  ['autofix: yes\n', '"yes" is not true or false'],
+  ['autofix: True\n', '"True" is not true or false'],
+  ['autofix: [true]\n', 'block, flow'],
+  ['autofix: "true"\n', 'unquoted'],
+  ['autofix:true\n', 'a space and true or false'],
+  ['autofix: true\nautofix: false\n', 'set twice'],
+  ['review:\n  autofix: true\n', 'review.autofix is not read'],
+] as const
+
+for (const [config, why] of BAD_AUTOFIX_CONFIGS) {
+  test(`${JSON.stringify(config)} fails the run at rebase with the line it could not read`, async ($, on) => {
+    const w = world($, on, { config: `${CONFIG}${config}` })
+    await start($)
+    const run = lastRun(w)
+    expect(run.steps.rebase).toMatchObject({ status: 'failed' })
+    expect(run.note).toContain('.no-mistakes.yaml on origin/main')
+    expect(run.note).toContain(why)
+    expect(w.spawns).toHaveLength(0)
+  })
+}

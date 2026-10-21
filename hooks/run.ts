@@ -29,11 +29,12 @@ export type RunSeed = Pick<Run, 'id' | 'repo' | 'branch' | 'base' | 'worktree' |
 export function newRun(seed: RunSeed): Run {
   const steps = {} as Record<StepName, StepState>
   for (const name of STEP_ORDER) steps[name] = { status: 'pending' }
-  return { ...seed, head: seed.localHead, remoteHead: '', commands: {}, exclude: [], agents: [], steps, decisions: [] }
+  return { ...seed, head: seed.localHead, remoteHead: '', commands: {}, exclude: [], autofix: false, agents: [], steps, decisions: [] }
 }
 
+// A run stored by an earlier version lacks the fields added since.
 export function fromStore(run: Run): Run {
-  return run.exclude === undefined ? { ...run, exclude: [] } : run
+  return run.exclude === undefined || run.autofix === undefined ? { ...run, exclude: run.exclude ?? [], autofix: run.autofix ?? false } : run
 }
 
 const SETTLED = new Set<StepState['status']>(['passed', 'skipped'])
