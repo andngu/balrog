@@ -485,6 +485,7 @@ export async function prCreate(run: Run, title: string, body: string): Promise<P
   if (!r.ok) return { error: (r.err || r.out).slice(0, 1000) }
   // gh prints the new PR's URL on its own line. Without one, the URL is not
   // trusted: the pane renders the PR as a link, so only an https URL may stand.
+  // A PR the view finds is taken as gh reports its URL, without that check.
   const url = r.out.split('\n').find(line => line.startsWith('https://'))
   const view = await prView(run)
   if (view) return view
