@@ -1831,13 +1831,15 @@ test('R6-4: an answer racing the timeout never commits at the same time as it', 
   await w.clock.advance(29 * 60_000 + 59_000)
   const before = w.calls.filter(c => c === 'git add -u').length
   hold = true
+  const notified = w.notifies
   const answered = complete($, 'agent-2', answer([]))
   await new Promise<void>(r => setTimeout(r, 20))
   await w.clock.advance(60_000)
   await new Promise<void>(r => setTimeout(r, 20))
   release!()
   await answered
-  for (let i = 0; i < 100 && lastRun(w).steps.document.status !== 'parked'; i++) await new Promise<void>(r => setTimeout(r, 5))
+  // Settled once the park's notification went out, the last thing a park does.
+  for (let i = 0; i < 100 && w.notifies === notified; i++) await new Promise<void>(r => setTimeout(r, 5))
   expect(lastRun(w).steps.document).toMatchObject({ status: 'parked', findings: [{ id: 'document:timeout' }] })
   expect(w.calls.filter(c => c === 'git add -u')).toHaveLength(before + 2)
   expect(most).toBe(1)
