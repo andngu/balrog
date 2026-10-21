@@ -67,6 +67,7 @@ type World = {
   files: Record<string, string>
   writes: { path: string; text: string }[]
   fsWriteThrows: boolean
+  holdWrite: Promise<void> | undefined
   pane: (surface: RenderSurface, props?: Partial<typeof PANE_PROPS>) => Promise<string>
 }
 
@@ -112,6 +113,7 @@ function world($: Engine, on: On, options: Options = {}): World {
     files: {},
     writes: [],
     fsWriteThrows: false,
+    holdWrite: undefined,
     pane: async (surface, props) => {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PLUGIN, props: { ...PANE_PROPS, ...props } })
       const texts = (await ui.findAll({ type: 'Text' })).map(found => found.text)
@@ -184,8 +186,11 @@ function world($: Engine, on: On, options: Options = {}): World {
   })
   on('fs.exists', (_$, e) => ({ value: e.path in w.files || (!e.path.endsWith('/history.jsonl') && options.branchConfig !== undefined) }))
   on('fs.read', (_$, e) => ({ value: e.path in w.files ? w.files[e.path]! : e.path.endsWith('/.git') ? w.gitFile : options.branchConfig ?? '' }))
-  on('fs.write', (_$, e) => {
+  on('fs.write', async (_$, e) => {
     if (w.fsWriteThrows) throw new Error('disk full')
+    const held = w.holdWrite
+    w.holdWrite = undefined
+    await held
     w.writes.push({ path: e.path, text: e.text })
     w.files[e.path] = e.text
     return { value: undefined }
@@ -1002,6 +1007,27 @@ test('a finished run is appended to history.jsonl with its follow-ups and an end
   expect(second.outcome).toBe('passed')
   const both = w.files[history]!.split('\n').filter(line => line !== '').map(line => JSON.parse(line) as Run)
   expect(both.map(r => r.id)).toEqual([first.id, second.id])
+})
+
+test('a slow record write does not let a later state land in latest.json before an earlier one', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  const settled = (ready: () => boolean) => new Promise<void>((done, fail) => {
+    let left = 500
+    const look = () => (ready() ? done() : --left > 0 ? setTimeout(look, 2) : fail(new Error('the run did not move on')))
+    look()
+  })
+  let release!: () => void
+  w.holdWrite = new Promise<void>(r => { release = r })
+  const parking = complete($, 'agent-1', answer([{ id: 'r1', severity: 'error', action: 'auto-fix', description: 'bug' }]))
+  await settled(() => lastRun(w).steps.review.status === 'parked')
+  const aborting = say($, 'no-mistakes-abort')
+  await settled(() => lastRun(w).outcome === 'aborted')
+  release()
+  await Promise.all([parking, aborting])
+  const latest = `${lastRun(w).recordDir}/latest.json`
+  expect(w.writes.filter(x => x.path === latest).map(x => JSON.parse(x.text))).toEqual(w.runs)
+  expect(JSON.parse(w.files[latest]!)).toEqual(lastRun(w))
 })
 
 test('a record write that throws never fails the run or changes a step', async ($, on) => {

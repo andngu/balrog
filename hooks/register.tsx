@@ -47,6 +47,7 @@ const isUsersVerdict = (verdict: ToolCheckResult) => verdict.decision !== 'allow
 const refused = (result: { deny?: unknown; isError?: unknown }) => result.deny !== undefined || result.isError === true
 
 export const register: Register = on => {
+  let recordWrite: Promise<void> = Promise.resolve()
   on('session.start', async ($, e, next) => {
     bind({
       run: (argv, init) => $.process.run(argv, init),
@@ -73,7 +74,7 @@ export const register: Register = on => {
       readRun: () => storedRun($),
       writeRun: async change => {
         const run = await update($, runAtom, run => change(run && fromStore(run)))
-        if (run?.recordDir !== undefined) await writeOrDrop(() => $.fs.write(`${run.recordDir}/latest.json`, JSON.stringify(run)))
+        if (run?.recordDir !== undefined) await (recordWrite = recordWrite.then(() => writeOrDrop(() => $.fs.write(`${run.recordDir}/latest.json`, JSON.stringify(run)))))
         return run
       },
       readSelected: () => read($, selectedAtom),
