@@ -85,7 +85,7 @@ Run the tests from the repository root:
 claude plugin test .
 ```
 
-- `hooks/`: the mod. `register.tsx` binds the commands and guards; `engine.ts`, `steps.ts`, `git.ts`, `guard.ts`, `prompts.ts`, `pane.tsx` and `run.ts` hold the run.
+- `hooks/`: the mod. `register.tsx` binds the commands and guards; `io.ts` holds the bindings the run reaches the host through; `engine.ts`, `steps.ts`, `git.ts`, `guard.ts`, `prompts.ts`, `pane.tsx` and `run.ts` hold the run.
 - `types/`: `index.d.ts`, the types of a run, a step, a finding and the configured commands.
 - `tests/`: `pipeline.test.ts`, the tests, run against a mocked world.
 - `scripts/realgit/`: checks that drive `git.ts` and `guard.ts` against real git repositories. Run `bun scripts/realgit/realgit.ts`.
