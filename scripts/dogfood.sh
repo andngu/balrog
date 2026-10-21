@@ -14,6 +14,9 @@
 #                                        when the run passed, 1 otherwise, 2 after the limit (1800 s)
 #   dogfood.sh stop <branch>             kill the session
 #
+# record and wait read only a record written after the last start, send or key, so wait answers
+# for that action and not with the verdict of an earlier run.
+#
 # start never deletes an existing clone or session, only the temporary directory of a clone of
 # its own that failed. It refuses when the session or the clone already exists.
 # It answers the folder-trust dialog for the clone it makes, on purpose, so the
@@ -46,14 +49,17 @@ accept_trust() { sleep 2; tmux send-keys -t "$target" Down; sleep 0.5; tmux send
 focus_pane() { tmux send-keys -t "$target" C-u; sleep 0.3; tmux send-keys -t "$target" C-x; sleep 0.3; tmux send-keys -t "$target" Tab; sleep 0.5; }
 prompt() { tmux capture-pane -p -t "$target" | grep '^❯' | tail -n 1 || true; }
 press() { local before after; before=$(prompt); tmux send-keys -t "$target" "$1"; sleep 1; after=$(prompt); [ "$after" = "$before" ] || [ "${after%"$1"}" = "$after" ]; }
-# Newer than the clone's HEAD, because an earlier clone at the same path left a record too.
+need_jq() { command -v jq >/dev/null || die "jq is not on PATH"; }
+mark="$dir/.git/dogfood-mark"
 record_file() {
-  command -v jq >/dev/null || die "jq is not on PATH"
-  local f
+  local f real since=$mark best=
+  real=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
+  [ -e "$since" ] || since=$dir/.git/HEAD
   for f in "${XDG_CACHE_HOME:-$HOME/.cache}"/no-mistakes/*/latest.json; do
-    [ -f "$f" ] && [ "$f" -nt "$dir/.git/HEAD" ] && [ "$(jq -r .repo "$f" 2>/dev/null)" = "$dir" ] && { echo "$f"; return 0; }
+    [ -f "$f" ] && [ "$f" -nt "$since" ] && [ "$(jq -r .repo "$f" 2>/dev/null)" = "$real" ] || continue
+    if [ -z "$best" ] || [ "$f" -nt "$best" ]; then best=$f; fi
   done
-  return 1
+  [ -n "$best" ] && echo "$best"
 }
 verdict='.steps as $s
   | (["rebase", "review", "test", "document", "lint", "recheck", "push", "pr", "ci"] | map(select($s[.].status != "passed" and $s[.].status != "skipped")) | first) as $step
@@ -86,22 +92,25 @@ case "$cmd" in
       fi
     done
     [ -n "$ready" ] || die "no input prompt after 60 s; see: tmux attach -t $session"
+    touch "$mark"
     [ $# -eq 0 ] || type_line "/no-mistakes $*"
     echo "session $session in $dir"
     ;;
-  send) alive; [ $# -ge 1 ] || die "send needs text"; type_line "$*" ;;
+  send) alive; [ $# -ge 1 ] || die "send needs text"; touch "$mark"; type_line "$*" ;;
   key)
     alive
     [ $# -eq 1 ] || die "key needs one key name"
+    touch "$mark"
     press "$1" || [ ${#1} -ne 1 ] || { focus_pane; press "$1" || die "$1 went to the chat input twice; see: tmux attach -t $session"; }
     ;;
   show) alive; screen "${1:-60}" ;;
   status) alive; type_line "/no-mistakes-status"; sleep 8; screen ;;
-  record) f=$(record_file) || die "no record for $dir yet"; jq . "$f" ;;
+  record) need_jq; f=$(record_file) || die "no record for $dir yet"; jq . "$f" ;;
   wait)
     alive
     limit=${1:-1800}
     [[ $limit =~ ^[0-9]+$ ]] || die "wait takes a number of seconds"
+    need_jq
     for (( waited = 0; ; waited += 5 )); do
       if f=$(record_file) && line=$(jq -r "$verdict" "$f") && [ -n "$line" ]; then
         echo "$line"
