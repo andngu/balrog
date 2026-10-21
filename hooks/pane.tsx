@@ -4,7 +4,7 @@ import type { Color, On } from 'claude-code'
 import type { Finding, FollowUp, Run, StepName, StepState, Verdict } from '../types'
 import { press, toggle } from './engine'
 import { io } from './io'
-import { AGENT_TIMEOUT_MS, commitLines, currentStep, fixRounds, isBlocking, MAX_FIX_ROUNDS, PANE, STEP_ORDER } from './run'
+import { AGENT_TIMEOUT_MS, commitLines, currentStep, fixRounds, isAutoRound, isBlocking, MAX_FIX_ROUNDS, PANE, STEP_ORDER } from './run'
 
 type Status = StepState['status']
 type Context = { run: Run; name: StepName; now: number }
@@ -45,7 +45,7 @@ function detail(state: StepState, { run, name, now }: Context): string {
     case 'running':
       return `${name === 'review' ? 'reviewer working' : name === 'ci' ? 'waiting on checks' : 'fixer working'}${state.reasked ? ', asked again for findings' : ''}${clock(state, now)}`
     case 'fixing':
-      return `fix round ${state.round}${clock(state, now)}`
+      return `${isAutoRound(run, name) ? `auto-fixing (fix round ${state.round})` : `fix round ${state.round}`}${clock(state, now)}`
     case 'parked':
       return `${count(state.findings.length)}, ${state.findings.filter(isBlocking).length} blocking`
     case 'passed':

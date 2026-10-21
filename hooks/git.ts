@@ -332,29 +332,52 @@ function scalar(raw: string): string | undefined | { error: string } {
 
 const SECTIONS = ['commands', 'review'] as const
 
+type Section = (typeof SECTIONS)[number]
+
 function parseConfig(text: string | undefined): Config | { error: string } {
-  const body: Record<(typeof SECTIONS)[number], string[]> = { commands: [], review: [] }
-  let section: (typeof SECTIONS)[number] | undefined
+  const body: Record<Section, string[]> = { commands: [], review: [] }
+  let section: Section | 'autofix' | undefined
+  let autofix: boolean | undefined
   for (const line of (text ?? '').split('\n').map(l => l.replace(/\s+$/, ''))) {
     if (/^\s*(#.*)?$/.test(line)) continue
     if (/^\s/.test(line)) {
+      if (section === 'autofix') return { error: `cannot read "${line.trim()}" under autofix: the value goes on the autofix: line` }
       if (section !== undefined) body[section].push(line)
       continue
     }
     const top = /^([A-Za-z_]+):(.*)$/.exec(line)
-    const known = SECTIONS.find(s => s === top?.[1])
+    const known = top?.[1] === 'autofix' ? 'autofix' : SECTIONS.find(s => s === top?.[1])
     const misplaced = /^-(\s|$)/.test(line) || (top !== null && (top[1] === 'exclude' || COMMAND_NAMES.some(n => n === top[1])))
     if (section !== undefined && known === undefined && misplaced) {
-      return { error: `cannot read "${line.trim()}" under ${section}: entries must be indented under their section key, and commands: and review: are the only top-level keys read` }
+      return { error: `cannot read "${line.trim()}" under ${section}: entries must be indented under their section key, and commands:, review: and autofix: are the only top-level keys read` }
     }
     section = known
-    if (known !== undefined && !/^(\s+#.*)?$/.test(top?.[2] ?? '')) return { error: `${known}: must be followed by one entry per line` }
+    if (known === 'autofix') {
+      if (autofix !== undefined) return { error: 'autofix is set twice' }
+      const read = readAutofix(line)
+      if (typeof read === 'object') return read
+      autofix = read
+    } else if (known !== undefined && !/^(\s+#.*)?$/.test(top?.[2] ?? '')) {
+      return { error: `${known}: must be followed by one entry per line` }
+    }
   }
   const commands = readCommands(body.commands)
   if ('error' in commands) return commands
   const exclude = readExclude(body.review)
   if ('error' in exclude) return exclude
-  return { commands, exclude }
+  return { commands, exclude, autofix: autofix ?? false }
+}
+
+function readAutofix(line: string): boolean | { error: string } {
+  const entry = /^autofix:(?:\s+(.*))?$/.exec(line)
+  if (!entry) return { error: 'autofix: must be followed by a space and true or false' }
+  const raw = entry[1] ?? ''
+  if (/^["']/.test(raw)) return { error: 'autofix: must be true or false, unquoted' }
+  const value = scalar(raw)
+  if (typeof value === 'object') return { error: `autofix: ${value.error}` }
+  if (value === undefined) return false
+  if (value !== 'true' && value !== 'false') return { error: `autofix: "${value}" is not true or false` }
+  return value === 'true'
 }
 
 const misread = (line: string, section: string) => ({ error: `cannot read "${line.trim()}" under ${section}: (a nested, continued or misaligned line)` })

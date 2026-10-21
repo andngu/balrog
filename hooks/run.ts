@@ -29,11 +29,11 @@ export type RunSeed = Pick<Run, 'id' | 'repo' | 'branch' | 'base' | 'worktree' |
 export function newRun(seed: RunSeed): Run {
   const steps = {} as Record<StepName, StepState>
   for (const name of STEP_ORDER) steps[name] = { status: 'pending' }
-  return { ...seed, head: seed.localHead, remoteHead: '', commands: {}, exclude: [], agents: [], steps, decisions: [] }
+  return { ...seed, head: seed.localHead, remoteHead: '', commands: {}, exclude: [], autofix: false, agents: [], steps, decisions: [] }
 }
 
 export function fromStore(run: Run): Run {
-  return run.exclude === undefined ? { ...run, exclude: [] } : run
+  return run.exclude === undefined || run.autofix === undefined ? { ...run, exclude: run.exclude ?? [], autofix: run.autofix ?? false } : run
 }
 
 const SETTLED = new Set<StepState['status']>(['passed', 'skipped'])
@@ -60,6 +60,16 @@ export function decide(run: Run, decision: Decision): Run {
 
 export function fixRounds(run: Run, step: StepName): number {
   return run.decisions.filter(d => d.step === step && d.verdict === 'fix').length
+}
+
+export function isAutoRound(run: Run, step: StepName): boolean {
+  return run.decisions.findLast(d => d.step === step && d.verdict === 'fix')?.isAuto === true
+}
+
+export function autoFixable(run: Run, step: StepName, findings: Finding[]): Finding[] | undefined {
+  if (!run.autofix || fixRounds(run, step) >= MAX_FIX_ROUNDS) return undefined
+  const blocking = findings.filter(isBlocking)
+  return blocking.length > 0 && blocking.every(f => f.action === 'auto-fix') ? blocking : undefined
 }
 
 export function agentOf(state: StepState): string | undefined {
@@ -196,7 +206,7 @@ export function statusText(run: Run | null): string | undefined {
   if (!name) return `${PLUGIN}: finishing`
   const state = run.steps[name]
   if (state.status === 'parked') return `${PLUGIN}: parked at ${name}`
-  if (state.status === 'fixing') return `${PLUGIN}: fixing ${name} (round ${state.round})`
+  if (state.status === 'fixing') return `${PLUGIN}: ${isAutoRound(run, name) ? 'auto-fixing' : 'fixing'} ${name} (round ${state.round})`
   return `${PLUGIN}: ${name}…`
 }
 

@@ -1,8 +1,8 @@
-import type { Finding, FollowUp, Outcome, Run, StepName, StepState, Verdict } from '../types'
+import type { Decision, Finding, FollowUp, Outcome, Run, StepName, StepState, Verdict } from '../types'
 import * as git from './git'
 import { io } from './io'
 import { fixPrompt, reaskPrompt, UNTRUSTED_NOTE, untrusted } from './prompts'
-import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isBlocking, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, report, setStep, skipRest, statusText, timeoutFinding } from './run'
+import { AGENT_TIMEOUT_MS, agentOf, autoFixable, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isBlocking, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, report, setStep, skipRest, statusText, timeoutFinding } from './run'
 import { AGENT_STEPS, commitMessage, FIXER, pollCi, spawn, STEP_DEFS } from './steps'
 import type { StepOutcome } from './steps'
 
@@ -121,6 +121,8 @@ function apply(run: Run, name: StepName, outcome: StepOutcome): Run {
 
 type From = (state: StepState) => boolean
 
+const parked: From = s => s.status === 'parked'
+
 // One conditional write: the change lands only while the step is still in
 // the state the caller observed, and only once. Every transition goes here,
 // so here an agent the step moves away from is retired.
@@ -150,10 +152,16 @@ async function settle(name: StepName, outcome: StepOutcome, from: From): Promise
     case 'failed':
       await finish('failed', `${name} failed: ${state.reason}`)
       return 'wait'
-    case 'parked':
+    case 'parked': {
+      const auto = autoFixable(run, name, state.findings)
+      if (auto) {
+        await autoFix(run, name, auto)
+        return 'wait'
+      }
       await io().writeSelected(() => state.findings.filter(isBlocking).map(f => f.id))
       await io().notify(`parked at ${name}: ${state.findings.length} finding(s) need your call`)
       return 'wait'
+    }
     case 'running':
     case 'fixing':
       ensurePolling()
@@ -162,6 +170,27 @@ async function settle(name: StepName, outcome: StepOutcome, from: From): Promise
     default:
       return 'continue'
   }
+}
+
+async function autoFix(run: Run, name: StepName, findings: Finding[]): Promise<void> {
+  await startFixRound(run, name, findings, { step: name, findingIds: findings.map(f => f.id), verdict: 'fix', isAuto: true })
+}
+
+async function startFixRound(run: Run, name: StepName, findings: Finding[], decision: Decision, select: readonly string[] = []): Promise<StepState | undefined> {
+  const round = fixRounds(run, name) + 1
+  const startedAt = await io().now()
+  const claimed = await claim(name, parked, r => setStep(decide(r, decision), name, { status: 'fixing', round, startedAt }))
+  if (!claimed) return undefined
+  if (select.length > 0) await io().writeSelected(() => [...select])
+  ensurePolling()
+  let step: StepState
+  try {
+    const started = await spawn(claimed, FIXER, fixPrompt(claimed, decision, findings, await git.diffStat(claimed)), `fix ${name} ${round}`)
+    step = 'error' in started ? { status: 'failed', reason: `could not start the fixer: ${started.error}` } : { status: 'fixing', agentId: started.agentId, round, startedAt }
+  } catch (e) {
+    step = { status: 'failed', reason: `could not start the fixer: ${String(e)}` }
+  }
+  return (await settle(name, { step }, isClaimed)) === 'lost' ? undefined : step
 }
 
 async function replayEarly(agentId: string): Promise<void> {
@@ -290,35 +319,20 @@ export async function press(verdict: Verdict | 'abort', select: readonly string[
     return { kind: 'done', text: `Aborted at ${name}; /no-mistakes-status shows what is left to do.` }
   }
   if (state.status !== 'parked') return refused(`${name} is ${activity(state)}, not parked, so there is nothing to ${verdict}; abort works at any time.`)
-  const parked: From = s => s.status === 'parked'
   if (verdict === 'fix') {
     const valid = state.findings.map(f => f.id)
     const unknown = select.filter(id => !valid.includes(id))
     if (unknown.length > 0) return refused(`${unknown.join(', ')}: no such finding at ${name}; its findings are ${valid.join(', ')}.`)
     const round = fixRounds(run, name) + 1
     if (round > MAX_FIX_ROUNDS) return refused(`${name} already had ${MAX_FIX_ROUNDS} fix rounds; approve, skip or abort.`)
-    // The selection is read here but written only once the claim is won, so a
-    // refused press (lost to a concurrent decision) changes nothing.
     const chosen = select.length > 0 ? [...select] : await io().readSelected()
     const findings = state.findings.filter(f => chosen.includes(f.id))
     if (findings.length === 0) return refused(`Select at least one finding of ${name} to fix, in the pane or with /no-mistakes-fix <ids>.`)
-    const decision = { step: name, findingIds: findings.map(f => f.id), verdict } as const
-    const startedAt = await io().now()
-    const claimed = await claim(name, parked, r => setStep(decide(r, decision), name, { status: 'fixing', round, startedAt }))
-    if (!claimed) return lost(name)
-    if (select.length > 0) await io().writeSelected(() => [...select])
-    ensurePolling()
-    let step: StepState
-    try {
-      const started = await spawn(claimed, FIXER, fixPrompt(claimed, name, findings, await git.diffStat(claimed)), `fix ${name} ${round}`)
-      step = 'error' in started ? { status: 'failed', reason: `could not start the fixer: ${started.error}` } : { status: 'fixing', agentId: started.agentId, round, startedAt }
-    } catch (e) {
-      step = { status: 'failed', reason: `could not start the fixer: ${String(e)}` }
-    }
-    const settled = await settle(name, { step }, isClaimed)
-    if (settled === 'lost') return lost(name)
-    if (step.status === 'failed') return done(`Could not send ${decision.findingIds.join(', ')} of ${name} to the fixer: ${step.reason}.`)
-    return done(`Sent ${decision.findingIds.join(', ')} of ${name} to the fixer, round ${round} of ${MAX_FIX_ROUNDS}.`)
+    const ids = findings.map(f => f.id)
+    const step = await startFixRound(run, name, findings, { step: name, findingIds: ids, verdict }, select)
+    if (!step) return lost(name)
+    if (step.status === 'failed') return done(`Could not send ${ids.join(', ')} of ${name} to the fixer: ${step.reason}.`)
+    return done(`Sent ${ids.join(', ')} of ${name} to the fixer, round ${round} of ${MAX_FIX_ROUNDS}.`)
   }
   const decision = { step: name, findingIds: state.findings.map(f => f.id), verdict } as const
   const step: StepState = verdict === 'approve' ? { status: 'passed', note: 'approved by the human', findings: state.findings } : { status: 'skipped', reason: 'skipped by the human' }
