@@ -32,8 +32,6 @@ export function newRun(seed: RunSeed): Run {
   return { ...seed, head: seed.localHead, remoteHead: '', commands: {}, exclude: [], agents: [], steps, decisions: [] }
 }
 
-// A run stored before review.exclude existed has no `exclude` field; every run
-// read from the store passes through here so the field is always a list.
 export function fromStore(run: Run): Run {
   return run.exclude === undefined ? { ...run, exclude: [] } : run
 }

@@ -15,8 +15,6 @@ const selectedAtom = atom({ plugin: 'no-mistakes', key: 'selected' } as const, [
 
 type Engine = Parameters<typeof read>[0]
 
-// The run in the store, read as this build understands it: one persisted before
-// review.exclude has no `exclude` field, and every reader gets the list.
 async function storedRun($: Engine): Promise<Run | null> {
   const run = await read($, runAtom)
   return run && fromStore(run)
