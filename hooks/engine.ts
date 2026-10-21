@@ -1,8 +1,8 @@
-import type { Outcome, Run, StepName, StepState, Verdict } from '../types'
+import type { FollowUp, Outcome, Run, StepName, StepState, Verdict } from '../types'
 import * as git from './git'
 import { io } from './io'
 import { fixPrompt, reaskPrompt, UNTRUSTED_NOTE, untrusted } from './prompts'
-import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, setStep, skipRest, statusText, timeoutFinding } from './run'
+import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, report, setStep, skipRest, statusText, timeoutFinding } from './run'
 import { AGENT_STEPS, commitMessage, FIXER, pollCi, spawn, STEP_DEFS } from './steps'
 import type { StepOutcome } from './steps'
 
@@ -83,7 +83,7 @@ export async function startRun(args: string): Promise<string> {
   const after = await io().readRun()
   // The note can quote the branch (a conflict names its commit subjects), and
   // this text reaches the main session's model, so it goes in as data.
-  if (after?.id === id && after.outcome) return `no-mistakes run ${id} ${after.outcome}. ${UNTRUSTED_NOTE}\n${untrusted('run note', after.note ?? '')}`
+  if (after?.id === id && after.outcome) return `no-mistakes run ${id} ${after.outcome}. ${UNTRUSTED_NOTE}\n${untrusted('run note', report(after))}`
   return `no-mistakes run ${id} started on ${facts.branch} (base ${facts.base}) in ${worktree.path}. The pane shows its progress.`
 }
 
@@ -362,10 +362,10 @@ async function finish(outcome: Outcome, note: string): Promise<void> {
   })
   if (!won || !run) return
   await showStatus()
-  let text = note
+  const followUps: FollowUp[] = []
   if (run.steps.push.status === 'passed' && run.head !== run.localHead) {
     const ff = await git.isAncestor(run, run.localHead, run.head)
-    text += `. origin/${run.branch} now has commits your local branch lacks; update it with ${ff ? 'git pull --ff-only' : 'git pull --rebase'}`
+    followUps.push({ text: `origin/${run.branch} has commits your local branch lacks; update it with`, command: ff ? 'git pull --ff-only' : 'git pull --rebase' })
   }
   for (const agentId of run.agents) await stopAgent(agentId)
   const running = await stillRunning(run)
@@ -373,18 +373,21 @@ async function finish(outcome: Outcome, note: string): Promise<void> {
   // commit of their own before the worktree goes.
   const wip = running.length === 0 ? await git.commitAll(run, 'wip(no-mistakes): uncommitted edits when the run ended') : { kind: 'clean' as const }
   const pinned = wip.kind === 'error' ? { kind: 'error' as const, detail: wip.detail } : await git.pinHead(run)
-  if (pinned.kind === 'pinned') text += `. Commits made in the worktree are kept at ${pinned.ref}; recover them with git branch ${run.branch}-recovered ${pinned.ref}, or drop them with git update-ref -d ${pinned.ref}`
+  if (pinned.kind === 'pinned') {
+    followUps.push({ text: `Commits made in the worktree are kept at ${pinned.ref}; recover them with`, command: `git branch ${run.branch}-recovered ${pinned.ref}` })
+    followUps.push({ text: 'Or drop them with', command: `git update-ref -d ${pinned.ref}` })
+  }
   if (outcome === 'failed') {
-    text += `. The worktree is kept for inspection at ${run.worktree}; remove it with git worktree remove ${run.worktree}`
+    followUps.push({ text: 'The worktree is kept for inspection; remove it with', command: `git worktree remove ${run.worktree}` })
   } else if (pinned.kind === 'error') {
-    text += `. The worktree ${run.worktree} is kept because its HEAD could not be pinned: ${pinned.detail}`
+    followUps.push({ text: `The worktree ${run.worktree} is kept because its HEAD could not be pinned: ${pinned.detail}` })
   } else if (running.length > 0) {
-    text += `. The worktree ${run.worktree} is kept because ${running.length} pipeline agent(s) could not be stopped and may still write to it; remove it with git worktree remove --force ${run.worktree} once they end`
+    followUps.push({ text: `The worktree ${run.worktree} is kept because ${running.length} pipeline agent(s) could not be stopped and may still write to it; once they end, remove it with`, command: `git worktree remove --force ${run.worktree}` })
   } else {
     const removed = await git.removeWorktree(run)
-    if (!removed.ok) text += `. Could not remove the worktree ${run.worktree}: ${removed.err}`
+    if (!removed.ok) followUps.push({ text: `Could not remove the worktree ${run.worktree}: ${removed.err}` })
   }
-  await io().writeRun(r => (r && r.id === run.id ? { ...r, note: text } : r))
+  await io().writeRun(r => (r && r.id === run.id ? { ...r, followUps } : r))
   await showStatus()
   await io().notify(`run ${outcome}: ${note}`)
 }

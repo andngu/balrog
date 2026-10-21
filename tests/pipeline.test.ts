@@ -341,8 +341,7 @@ test('malformed reviewer json, asked for once more and still malformed, fails cl
   expect(run.steps.review).toMatchObject({ status: 'failed' })
   expect(run.outcome).toBe('failed')
   expect(run.note).toContain('unreadable')
-  expect(run.note).toContain(`git worktree remove ${run.worktree}`)
-  expect(run.note).not.toContain('--force')
+  expect(run.followUps).toEqual([{ text: 'The worktree is kept for inspection; remove it with', command: `git worktree remove ${run.worktree}` }])
   expect(w.calls.some(c => c.startsWith('git worktree remove'))).toBe(false)
   expect(await w.pane('terminal')).toContain('Run failed')
 })
@@ -427,7 +426,7 @@ test('a clean run pushes with a lease on the observed remote head, skips pr with
   expect(run.steps.pr).toMatchObject({ status: 'skipped', reason: 'gh is missing or not authenticated' })
   expect(run.steps.ci).toMatchObject({ status: 'skipped', reason: 'no pull request to watch' })
   expect(run.outcome).toBe('passed')
-  expect(run.note).toContain('git pull')
+  expect(run.followUps).toEqual([{ text: 'origin/feat has commits your local branch lacks; update it with', command: 'git pull --ff-only' }])
   expect(w.calls).toContain(`git worktree remove --force ${run.worktree}`)
   expect(w.spawns.map(s => s.description.replace(` (${run.id}/0)`, ''))).toEqual(['no-mistakes review', 'no-mistakes document'])
 })
@@ -538,12 +537,13 @@ test('defect 1: refuses the run when origin/<branch> has commits the local branc
   const w = world($, on)
   w.pushed = REMOTE
   w.rules.push(line => (line === `git merge-base --is-ancestor ${REMOTE} HEAD` ? { exitCode: 1 } : undefined))
-  await start($)
+  const text = await start($)
   const run = lastRun(w)
   expect(run.steps.rebase).toMatchObject({ status: 'failed' })
   expect(run.outcome).toBe('failed')
   expect(run.note).toContain('origin/feat has commits')
   expect(run.note).toContain('git pull')
+  expect(text).toContain(`remove it with git worktree remove ${run.worktree}`)
   expect(w.spawns).toHaveLength(0)
   expect(w.calls.some(c => c.startsWith('git push'))).toBe(false)
 })
@@ -575,8 +575,7 @@ test('defect 2: abort after a fixer commit pins the worktree head under a recove
   const remove = w.calls.indexOf(`git worktree remove --force ${run.worktree}`)
   expect(pin).toBeGreaterThan(-1)
   expect(remove).toBeGreaterThan(pin)
-  expect(run.note).toContain(`refs/no-mistakes/recover/${run.id}`)
-  expect(run.note).toContain('git branch')
+  expect(run.followUps?.map(f => f.command)).toContain(`git branch feat-recovered refs/no-mistakes/recover/${run.id}`)
   await complete($, 'agent-2', 'Fixed and committed.')
   expect(lastRun(w).outcome).toBe('aborted')
   expect(w.spawns).toHaveLength(2)
@@ -974,7 +973,7 @@ test('item 5: a recovery ref is pinned only for commits beyond the rebased head,
   await pressOnce($, 'abort')
   const run = lastRun(w)
   expect(w.calls).toContain(`git update-ref refs/no-mistakes/recover/${run.id} ${FIXED}`)
-  expect(run.note).toContain(`git update-ref -d refs/no-mistakes/recover/${run.id}`)
+  expect(run.followUps?.map(f => f.command)).toContain(`git update-ref -d refs/no-mistakes/recover/${run.id}`)
 })
 
 test('item 5: a passed run pins nothing because the worktree head is the pushed head', async ($, on) => {
@@ -1039,8 +1038,9 @@ test('item 6: a worktree is kept, and the note says so, while a run agent could 
   expect(run.outcome).toBe('aborted')
   expect(w.stops).toContain('agent-2')
   expect(w.calls.some(c => c.startsWith('git worktree remove'))).toBe(false)
-  expect(run.note).toContain('could not be stopped')
-  expect(run.note).toContain(`git worktree remove --force ${run.worktree}`)
+  expect(run.followUps).toEqual([
+    { text: `The worktree ${run.worktree} is kept because 1 pipeline agent(s) could not be stopped and may still write to it; once they end, remove it with`, command: `git worktree remove --force ${run.worktree}` },
+  ])
 })
 
 // Round 3: the mod owns every git call; agents get no git and no general shell.
@@ -1139,7 +1139,7 @@ test('A: uncommitted edits are committed as wip and pinned before the worktree g
   expect(commit).toBeGreaterThan(-1)
   expect(pin).toBeGreaterThan(commit)
   expect(remove).toBeGreaterThan(pin)
-  expect(run.note).toContain(`refs/no-mistakes/recover/${run.id}`)
+  expect(run.followUps?.map(f => f.command)).toContain(`git branch feat-recovered refs/no-mistakes/recover/${run.id}`)
 })
 
 test('B: the reviewer has Read, Grep and Glob only and the fixer no git tool, both under dontAsk', async ($, on) => {
