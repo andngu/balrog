@@ -61,6 +61,7 @@ type World = {
   sends: { to: string; text: string }[]
   sendFails: boolean
   stopAborts: boolean
+  writeFails: 'deny' | 'error' | 'throw' | undefined
   pane: (surface: RenderSurface) => Promise<string>
 }
 
@@ -100,6 +101,7 @@ function world($: Engine, on: On, options: Options = {}): World {
     sends: [],
     sendFails: false,
     stopAborts: false,
+    writeFails: undefined,
     pane: async surface => {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
       const texts = (await ui.findAll({ type: 'Text' })).map(found => found.text)
@@ -173,14 +175,19 @@ function world($: Engine, on: On, options: Options = {}): World {
     if (options.dangling?.includes(e.path.split('/').pop() ?? '')) return { value: { kind: 'other' as const, size: 0, mtimeMs: 0, isLink: true } }
     return { value: { kind: 'file' as const, size: 1, mtimeMs: 0, isLink: real !== e.path, realPath: real } }
   })
-  on('tool.call', async (_$, e) => {
+  on('tool.call', (_$, e) => {
     w.ran.push(e.tool)
+    if (e.tool === 'Write' && w.writeFails !== undefined) {
+      // A throw before any await: the hook above sees it thrown, not rejected.
+      if (w.writeFails === 'throw') throw new Error('write exploded')
+      return w.writeFails === 'deny' ? { deny: 'refused downstream' } : { result: 'disk full', isError: true }
+    }
     if (e.tool === 'TaskStop') {
       const id = String((e as unknown as { task_id?: string }).task_id)
       w.stops.push(id)
       if (!w.stopFails) w.status[id] = 'killed'
       // As the engine does: a stopped agent's turn ends, as aborted.
-      if (w.stopAborts) await $.turn.complete({ agentId: id, answer: '', reason: 'aborted', durationMs: 1, isAborted: true, turnId: `stop-${id}` })
+      if (w.stopAborts) return $.turn.complete({ agentId: id, answer: '', reason: 'aborted', durationMs: 1, isAborted: true, turnId: `stop-${id}` }).then(() => ({ result: 'ran' }))
     }
     return { result: 'ran' }
   })
@@ -1844,3 +1851,40 @@ test('R6-4: an answer racing the timeout never commits at the same time as it', 
   expect(w.calls.filter(c => c === 'git add -u')).toHaveLength(before + 2)
   expect(most).toBe(1)
 })
+
+test('R6-5: fallback finding ids never collide with an id the agent chose', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', answer([{ id: 'review-2', severity: 'error', description: 'a' }, { id: 'not a slug', severity: 'error', description: 'b' }, { severity: 'error', description: 'c' }, { id: 'review-2', severity: 'error', description: 'd' }]))
+  const ids = (lastRun(w).steps.review as { findings: { id: string }[] }).findings.map(f => f.id)
+  expect(new Set(ids).size).toBe(4)
+  expect(ids[0]).toBe('review-2')
+})
+
+test('R6-5: CI check names that slug alike, or like a suffixed id, get distinct ids', async ($, on) => {
+  const w = world($, on, { gh: true })
+  w.rules.push(line => (line.startsWith('gh pr checks 7') ? { stdout: JSON.stringify(['foo', 'foo!', 'foo-2'].map(name => ({ name, state: 'FAILURE', bucket: 'fail' }))) } : undefined), ...PR_RULES)
+  await start($)
+  await passTwo($)
+  await w.clock.advance(30_000)
+  const ids = lastRun(w).decisions[0]!.findingIds
+  expect(ids).toHaveLength(3)
+  expect(new Set(ids).size).toBe(3)
+  expect(ids[0]).toBe('ci:foo')
+})
+
+for (const how of ['deny', 'error', 'throw'] as const) {
+  test(`R6-7: a write a later hook ${how === 'deny' ? 'denies' : how === 'error' ? 'fails' : 'throws on'} leaves no record, so the commit cannot take the file`, async ($, on) => {
+    const w = world($, on, { missing: ['new.ts', 'ok.ts'] })
+    await start($)
+    await complete($, 'agent-1', answer([]))
+    const wt = lastRun(w).worktree
+    w.writeFails = how
+    const r = await toolCall($, 'agent-2', { tool: 'Write', file_path: `${wt}/new.ts`, content: 'x' }).catch(() => ({ isError: true as const }))
+    expect(isDenied(r)).toBe(true)
+    expect(lastRun(w).written ?? []).toEqual([])
+    w.writeFails = undefined
+    expect(isDenied(await toolCall($, 'agent-2', { tool: 'Write', file_path: `${wt}/ok.ts`, content: 'x' }))).toBe(false)
+    expect(lastRun(w).written).toEqual(['ok.ts'])
+  })
+}

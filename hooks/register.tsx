@@ -94,10 +94,13 @@ export const register: Register = on => {
       return { ...r, written: [...(r.written ?? []), written] }
     })
     const unrecord = () => update($, runAtom, r => (r && r.id === owner.run.id && added ? { ...r, written: (r.written ?? []).filter(p => p !== written) } : r))
-    const result = await Promise.resolve(next(e)).catch(async err => {
+    let result: Awaited<ReturnType<typeof next>>
+    try {
+      result = await next(e)
+    } catch (err) {
       if (added) await unrecord()
       throw err
-    })
+    }
     if (added && refused(result)) await unrecord()
     return result
   }).catch(($, e, next) => (next.called || e.agentId === undefined || !knownAgents.has(e.agentId) ? next(e) : { deny: 'no-mistakes: the guard failed, so the call is refused' }))
