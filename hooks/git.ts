@@ -448,8 +448,10 @@ export type GhRepo = { host: string; slug: string; path: string }
 // would open the PR or read CI somewhere else.
 export async function ghRepo(run: Run): Promise<GhRepo | { error: string }> {
   const r = await git(run.repo, 'remote', 'get-url', 'origin')
-  const m = r.ok ? /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?([^/:]+)(?::\d+)?[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(r.out) : null
-  if (!m) return { error: `origin (${r.ok ? r.out : r.err}) does not name a GitHub repository gh can reach` }
+  // `scheme://[user@]host[:port]/owner/name` or scp-like `[user@]host:owner/name`.
+  const m = r.ok ? (/^[a-z+]+:\/\/(?:[^@/]+@)?([^/:@]+)(?::\d+)?\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(r.out) ?? /^(?:[^@/:]+@)?([^/:@]+):([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(r.out)) : null
+  // A credential in the URL stays out of the reason the pane shows.
+  if (!m) return { error: `origin (${r.ok ? r.out.replace(/\/\/[^@/]+@/, '//') : r.err}) does not name a GitHub repository gh can reach` }
   const [, host, owner, name] = m as unknown as [string, string, string, string]
   const path = `${owner}/${name}`
   return { host, path, slug: host === 'github.com' ? path : `${host}/${path}` }

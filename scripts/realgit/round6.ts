@@ -19,14 +19,16 @@ export async function round6(h: any): Promise<void> {
     ['git@github.com:o/r.git', 'github.com o/r o/r'],
     ['https://github.com/o/r', 'github.com o/r o/r'],
     ['https://x-access-token@github.com/o/r.git/', 'github.com o/r o/r'],
+    ['https://x-access-token:s3cret@github.com/o/r.git', 'github.com o/r o/r'],
     ['ssh://git@ghe.example.com:2222/team/svc.git', 'ghe.example.com team/svc ghe.example.com/team/svc'],
     ['../r6-origin.git', 'error'],
+    ['https://x-access-token:s3cret@example.com/only-one-segment', 'error'],
     [origin, 'error'],
   ] as const) {
     await sh(['git', 'remote', 'set-url', 'origin', url], seed)
     const target = await git.ghRepo(run)
     const got = 'error' in target ? 'error' : `${target.host} ${target.path} ${target.slug}`
-    check(`R6-8: origin ${url} is ${expected}`, got === expected, JSON.stringify(target))
+    check(`R6-8: origin ${url} is ${expected}`, got === expected && !JSON.stringify(target).includes('s3cret'), JSON.stringify(target))
   }
   await sh(['git', 'remote', 'set-url', 'origin', origin], seed)
 }
