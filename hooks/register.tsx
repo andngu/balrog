@@ -29,6 +29,9 @@ async function ownerOfCall(run: Run | null, agentId: string | undefined): Promis
 // turns it into an allow.
 const isUsersVerdict = (verdict: ToolCheckResult) => verdict.decision !== 'allow' && (verdict.rule ?? verdict.hook ?? verdict.setting) !== undefined
 
+// A tool.call result that refuses the call: a deny, or an error the call came back with.
+const refused = (result: { deny?: unknown; isError?: unknown }) => result.deny !== undefined || result.isError === true
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     bind({
@@ -76,11 +79,23 @@ export const register: Register = on => {
     if (reason !== undefined) return { deny: `no-mistakes: ${reason}` }
     // Recorded before the call: a record that fails then refuses the write
     // (the catch below) instead of leaving a file the commit would not take.
+    // A call a later hook or setting refuses, or that throws, leaves no record
+    // behind: the file is then the user's, and the commit must not take it.
     const written = await writtenPath(call, owner.run.worktree, stat)
-    if (written !== undefined) {
-      await update($, runAtom, r => (r && r.id === owner.run.id && !r.written?.includes(written) ? { ...r, written: [...(r.written ?? []), written] } : r))
-    }
-    return next(e)
+    if (written === undefined) return next(e)
+    let added = false
+    await update($, runAtom, r => {
+      if (!r || r.id !== owner.run.id || r.written?.includes(written)) return r
+      added = true
+      return { ...r, written: [...(r.written ?? []), written] }
+    })
+    const unrecord = () => update($, runAtom, r => (r && r.id === owner.run.id && added ? { ...r, written: (r.written ?? []).filter(p => p !== written) } : r))
+    const result = await Promise.resolve(next(e)).catch(async err => {
+      if (added) await unrecord()
+      throw err
+    })
+    if (added && refused(result)) await unrecord()
+    return result
   }).catch(($, e, next) => (next.called || e.agentId === undefined || !knownAgents.has(e.agentId) ? next(e) : { deny: 'no-mistakes: the guard failed, so the call is refused' }))
 
   // The allow half: the engine's own verdict comes first and a deny or ask

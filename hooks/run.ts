@@ -118,7 +118,15 @@ export function parseFindings(answer: string, step: StepName): Parsed {
     if (typeof f.description !== 'string' || f.description === '') return { error: `finding ${i} has no description` }
     if (typeof f.severity !== 'string' || !SEVERITIES.has(f.severity)) return { error: `finding ${i} has no valid severity` }
     const action = typeof f.action === 'string' && ACTIONS.has(f.action) ? f.action : 'ask-user'
-    const id = typeof f.id === 'string' && ID.test(f.id) && !findings.some(g => g.id === f.id) ? f.id : `${step}-${i + 1}`
+    // Every id is unique within the answer, a fallback included: a fallback
+    // takes the first number from its position on that no earlier finding holds.
+    const taken = (candidate: string) => findings.some(g => g.id === candidate)
+    let id = typeof f.id === 'string' && ID.test(f.id) && !taken(f.id) ? f.id : ''
+    if (id === '') {
+      let n = i + 1
+      while (taken(`${step}-${n}`)) n++
+      id = `${step}-${n}`
+    }
     findings.push({
       id,
       severity: f.severity as Finding['severity'],

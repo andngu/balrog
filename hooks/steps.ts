@@ -235,9 +235,15 @@ export async function pollCi(run: Run, claimFix: ClaimFix): Promise<Polled | und
   if (failing.length > 0) {
     const round = fixRounds(run, 'ci') + 1
     // A check name is the branch's to choose (a workflow it edits), so its id is a slug.
-    const findings: Finding[] = failing.map((name, i) => {
-      const id = slug(name)
-      return { id: failing.findIndex(n => slug(n) === id) === i ? `ci:${id}` : `ci:${id}-${i + 1}`, severity: 'error', action: 'auto-fix', description: `CI check "${name}" failed` }
+    // Each id is checked against every id already issued, so a suffixed id cannot
+    // collide with a real slug (checks 'x', 'x', 'x-2' get ci:x, ci:x-2, ci:x-2-2).
+    const issued: string[] = []
+    const findings: Finding[] = failing.map(name => {
+      const base = `ci:${slug(name)}`
+      let id = base
+      for (let n = 2; issued.includes(id); n++) id = `${base}-${n}`
+      issued.push(id)
+      return { id, severity: 'error', action: 'auto-fix', description: `CI check "${name}" failed` }
     })
     if (round > MAX_FIX_ROUNDS) return polled({ step: { status: 'parked', findings } })
     const claimed = await claimFix(findings, round)
