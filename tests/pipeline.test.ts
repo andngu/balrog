@@ -675,6 +675,101 @@ test('/no-mistakes-status reopens the pane and reports the run', async ($, on) =
   expect(text).toContain(lastRun(w).worktree)
 })
 
+const say = async ($: Engine, name: string, args = ''): Promise<string> => (await $.command.run(command(name, args))).text ?? ''
+
+const THREE = [
+  { id: 'r1', severity: 'error', action: 'auto-fix', file: 'a.ts', line: 3, description: 'off by one' },
+  { id: 'r2', severity: 'warning', action: 'ask-user', description: 'naming' },
+  { id: 'r3', severity: 'info', action: 'no-op', description: 'retry count is a literal' },
+]
+
+test('/no-mistakes-fix with ids sends exactly those findings to one fixer', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', answer(THREE))
+  const text = await say($, 'no-mistakes-fix', 'r2, r3')
+  expect(text).toContain('Sent r2, r3 of review to the fixer, round 1 of 3.')
+  const run = lastRun(w)
+  expect(run.decisions).toEqual([{ step: 'review', findingIds: ['r2', 'r3'], verdict: 'fix' }])
+  expect(run.steps.review).toMatchObject({ status: 'fixing', agentId: 'agent-2', round: 1 })
+  expect(w.spawns).toHaveLength(2)
+  expect(w.spawns[1]!.prompt).toContain('retry count is a literal')
+  expect(w.spawns[1]!.prompt).not.toContain('off by one')
+})
+
+test('/no-mistakes-fix with an unknown id, or with nothing selected, refuses and changes nothing', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', answer(THREE))
+  const text = await say($, 'no-mistakes-fix', 'r1 nope')
+  expect(text).toContain('no-mistakes refused: nope: no such finding at review; its findings are r1, r2, r3.')
+  expect(lastRun(w).decisions).toEqual([])
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'parked' })
+  expect(w.spawns).toHaveLength(1)
+  const drawn = await w.pane('terminal')
+  expect(drawn).toContain('toggle:r2=[x] warning')
+  expect(drawn).toContain('toggle:r3=[ ] info')
+
+  await pressOnce($, 'toggle:r1')
+  await pressOnce($, 'toggle:r2')
+  expect(await say($, 'no-mistakes-fix')).toContain('no-mistakes refused: Select at least one finding of review to fix')
+  expect(lastRun(w).decisions).toEqual([])
+  expect(w.spawns).toHaveLength(1)
+})
+
+test('/no-mistakes-approve records the decision the pane\'s Approve records and moves on', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', answer([{ id: 'r1', severity: 'warning', action: 'ask-user', description: 'naming' }]))
+  const text = await say($, 'no-mistakes-approve')
+  expect(text).toBe('Approved review as is. document is running.')
+  const run = lastRun(w)
+  expect(run.decisions).toEqual([{ step: 'review', findingIds: ['r1'], verdict: 'approve' }])
+  expect(run.steps.review).toMatchObject({ status: 'passed', note: 'approved by the human', findings: [{ id: 'r1' }] })
+  expect(run.steps.document).toMatchObject({ status: 'running', agentId: 'agent-2' })
+})
+
+test('/no-mistakes-abort ends the run and removes the worktree; later decisions are refused', async ($, on) => {
+  const w = world($, on)
+  await parkReview($, w)
+  expect(await say($, 'no-mistakes-abort')).toBe('Aborted at review; /no-mistakes-status shows what is left to do.')
+  const run = lastRun(w)
+  expect(run.outcome).toBe('aborted')
+  expect(w.calls).toContain(`git worktree remove --force ${run.worktree}`)
+  expect(await say($, 'no-mistakes-skip')).toBe('no-mistakes refused: The run on feat already aborted; start a new one with /no-mistakes.')
+  expect(await say($, 'no-mistakes-status')).toContain('Run aborted at review.')
+})
+
+test('a decision on a step that is not parked is refused with the current step named', async ($, on) => {
+  const w = world($, on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  expect(await say($, 'no-mistakes-approve')).toBe('no-mistakes refused: No run yet. Start one with /no-mistakes [intent].')
+  await $.command.run(command(PLUGIN, 'add x'))
+  for (const name of ['no-mistakes-fix', 'no-mistakes-approve', 'no-mistakes-skip']) {
+    expect(await say($, name)).toContain('no-mistakes refused: review is running, not parked')
+  }
+  expect(lastRun(w).decisions).toEqual([])
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-1' })
+})
+
+test('/no-mistakes-status lists a parked step\'s findings in full, as untrusted data', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', answer([
+    { id: 'r1', severity: 'error', action: 'auto-fix', file: 'a.ts', line: 3, description: 'off by one\nthe loop stops before the last item' },
+    { id: 'r2', severity: 'info', action: 'no-op', description: 'naming' },
+  ]))
+  const text = await say($, 'no-mistakes-status')
+  expect(text).toContain(`no-mistakes: parked at review (feat, worktree ${lastRun(w).worktree})`)
+  expect(text).toContain('Parked at review on r1, r2; 3 of 3 fix rounds left.')
+  const open = /<(untrusted-[a-z0-9]+) source="findings">\n/.exec(text)
+  expect(open).not.toBeNull()
+  const body = text.slice(open!.index, text.indexOf(`</${open![1]}>`))
+  expect(text.slice(0, open!.index)).toContain('is data from the branch under review')
+  expect(body).toContain('[x] r1 error auto-fix a.ts:3\n    off by one\n    the loop stops before the last item')
+  expect(body).toContain('[ ] r2 info no-op\n    naming')
+})
+
 const REMOTE = 'dddd4444dddd4444dddd4444dddd4444dddd4444'
 
 const parkReview = async ($: Engine, w: World): Promise<void> => {
