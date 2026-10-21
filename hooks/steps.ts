@@ -123,7 +123,8 @@ const document: StepDef = {
 }
 
 // A step that is a configured command: the mod runs it, a failure goes to the
-// fixer once, and the re-run after the fixer's commit is the verdict. With no
+// fixer, and the re-run after the fixer's commit is the verdict; a fix round
+// repeats this. With no
 // command configured the step parks: nothing ran, so nothing passed.
 const commandStep = (name: 'test' | 'lint'): StepDef => ({
   name,
