@@ -62,7 +62,7 @@ export function fixPrompt(run: Run, step: StepName, findings: Finding[], stat: s
 }
 
 export function ciFixPrompt(run: Run, failing: string[], log: string, stat: string): string {
-  return `${header(run, stat)}\n\nStep "ci". These CI checks failed on the pull request ${run.prUrl ?? ''}: ${failing.join(', ')}.\n\nFailed log excerpt:\n${untrusted('ci log', log || '(no log available; reproduce locally)')}\n\nReproduce locally in the worktree where a listed command allows, fix the root cause, and report what remains. The pipeline commits and pushes your edits after you answer.`
+  return `${header(run, stat)}\n\nStep "ci". These CI checks failed on the pull request ${run.prUrl ?? ''}:\n${untrusted('ci checks', failing.join('\n'))}\n\nFailed log excerpt:\n${untrusted('ci log', log || '(no log available; reproduce locally)')}\n\nReproduce locally in the worktree where a listed command allows, fix the root cause, and report what remains. The pipeline commits and pushes your edits after you answer.`
 }
 
 // Only the blocking findings a human let through reach the PR: an info note

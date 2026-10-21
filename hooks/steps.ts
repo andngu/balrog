@@ -2,7 +2,7 @@ import type { Decision, Finding, Run, StepName, StepState } from '../types'
 import * as git from './git'
 import { io } from './io'
 import { ciFixPrompt, commandPrompt, documentPrompt, FIXER_SYSTEM, prBodyPrompt, reviewPrompt, REVIEWER_SYSTEM } from './prompts'
-import { CI_GRACE_MS, CI_TIMEOUT_MS, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN } from './run'
+import { CI_GRACE_MS, CI_TIMEOUT_MS, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN, slug } from './run'
 
 export const REVIEWER = `${PLUGIN}:reviewer`
 export const FIXER = `${PLUGIN}:fixer`
@@ -234,7 +234,11 @@ export async function pollCi(run: Run, claimFix: ClaimFix): Promise<Polled | und
   const failing = checks.filter(c => c.bucket === 'fail' || c.bucket === 'cancel').map(c => c.name)
   if (failing.length > 0) {
     const round = fixRounds(run, 'ci') + 1
-    const findings: Finding[] = failing.map(name => ({ id: `ci:${name}`, severity: 'error', action: 'auto-fix', description: `CI check "${name}" failed` }))
+    // A check name is the branch's to choose (a workflow it edits), so its id is a slug.
+    const findings: Finding[] = failing.map((name, i) => {
+      const id = slug(name)
+      return { id: failing.findIndex(n => slug(n) === id) === i ? `ci:${id}` : `ci:${id}-${i + 1}`, severity: 'error', action: 'auto-fix', description: `CI check "${name}" failed` }
+    })
     if (round > MAX_FIX_ROUNDS) return polled({ step: { status: 'parked', findings } })
     const claimed = await claimFix(findings, round)
     if (!claimed) return undefined

@@ -88,6 +88,14 @@ export function gate(findings: Finding[], note?: string): StepState {
 const SEVERITIES: ReadonlySet<string> = new Set(['error', 'warning', 'info'])
 const ACTIONS: ReadonlySet<string> = new Set(['auto-fix', 'ask-user', 'no-op'])
 
+// A finding id reaches every later prompt as a fact of a human decision, so
+// the agent may choose only a short slug: anything else is replaced.
+const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,31}$/
+
+export function slug(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24).replace(/-+$/, '') || 'check'
+}
+
 export type Parsed = { findings: Finding[] } | { error: string }
 
 export function parseFindings(answer: string, step: StepName): Parsed {
@@ -110,8 +118,9 @@ export function parseFindings(answer: string, step: StepName): Parsed {
     if (typeof f.description !== 'string' || f.description === '') return { error: `finding ${i} has no description` }
     if (typeof f.severity !== 'string' || !SEVERITIES.has(f.severity)) return { error: `finding ${i} has no valid severity` }
     const action = typeof f.action === 'string' && ACTIONS.has(f.action) ? f.action : 'ask-user'
+    const id = typeof f.id === 'string' && ID.test(f.id) && !findings.some(g => g.id === f.id) ? f.id : `${step}-${i + 1}`
     findings.push({
-      id: typeof f.id === 'string' && f.id !== '' ? f.id : `${step}-${i + 1}`,
+      id,
       severity: f.severity as Finding['severity'],
       action: action as Finding['action'],
       ...(typeof f.file === 'string' ? { file: f.file } : {}),
