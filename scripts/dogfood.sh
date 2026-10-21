@@ -2,7 +2,7 @@
 # Gate a branch with its own mod: host Claude Code in tmux with the branch cloned
 # and loaded as a plugin, so /no-mistakes runs the code under review.
 #
-#   dogfood.sh start <branch> [intent]   clone the branch, start the session, run /no-mistakes
+#   dogfood.sh start <branch> [intent]   clone the branch, start the session, run /no-mistakes if an intent is given
 #   dogfood.sh send <branch> <text>      clear the chat input, type text, press Enter
 #   dogfood.sh key <branch> <key>        press one tmux key name (Escape, Enter, a, ...) in the pane;
 #                                        a character that lands in the chat input refocuses and retries
@@ -10,7 +10,8 @@
 #   dogfood.sh status <branch>           run /no-mistakes-status and print the screen
 #   dogfood.sh stop <branch>             kill the session
 #
-# start never deletes anything. It refuses when the session or the clone already exists.
+# start never deletes an existing clone or session, only the temporary directory of a clone of
+# its own that failed. It refuses when the session or the clone already exists.
 # It answers the folder-trust dialog for the clone it makes, on purpose, so the
 # branch's plugin and hooks run without a human decision on that dialog.
 set -euo pipefail

@@ -361,6 +361,36 @@ test('malformed reviewer json, asked for once more and still malformed, fails cl
   expect(lines).toContain(`git worktree remove ${run.worktree}`)
 })
 
+test('a passed run removes its empty run directory after the worktree', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await passTwo($)
+  const run = lastRun(w)
+  expect(run.outcome).toBe('passed')
+  const runDir = run.worktree.replace(/\/wt$/, '')
+  expect(runDir).not.toBe(run.worktree)
+  expect(w.calls.indexOf(`rmdir ${runDir}`)).toBeGreaterThan(w.calls.indexOf(`git worktree remove --force ${run.worktree}`))
+  expect(w.calls.some(c => c.startsWith('rm '))).toBe(false)
+})
+
+test('a failed run keeps its run directory with the worktree', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', 'Looks fine to me, no findings.')
+  await complete($, 'agent-1', 'Still fine, honestly.')
+  expect(lastRun(w).outcome).toBe('failed')
+  expect(w.calls.some(c => c.startsWith('rmdir'))).toBe(false)
+})
+
+test('a worktree that will not go leaves the run directory alone', async ($, on) => {
+  const w = world($, on)
+  w.rules.push(line => (line.startsWith('git worktree remove') ? { exitCode: 1, stderr: 'locked' } : undefined))
+  await start($)
+  await passTwo($)
+  expect(lastRun(w).outcome).toBe('passed')
+  expect(w.calls.some(c => c.startsWith('rmdir'))).toBe(false)
+})
+
 test('Approve records a decision, runs the test command itself, and starts the document fixer in the worktree', async ($, on) => {
   const w = world($, on)
   await start($)
