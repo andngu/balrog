@@ -97,7 +97,7 @@ const rebase: StepDef = {
       return failed(reason)
     }
     if (r.kind === 'error') return failed(r.detail)
-    const patch = { head: r.head, remoteHead: r.remoteHead, commands: r.commands }
+    const patch = { head: r.head, remoteHead: r.remoteHead, ...r.config }
     if (r.isEmpty) return { step: { status: 'passed', note: 'no diff against the base', findings: [] }, patch, skipRest: `no diff against origin/${run.base}` }
     return { step: { status: 'passed', note: `rebased onto origin/${run.base}`, findings: [] }, patch }
   },

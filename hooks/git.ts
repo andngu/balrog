@@ -1,4 +1,4 @@
-import type { CommandName, Commands, Run } from '../types'
+import type { CommandName, Commands, Config, Run } from '../types'
 import { io } from './io'
 
 type Ran = { ok: boolean; code: number; out: string; err: string }
@@ -192,7 +192,7 @@ async function fetchRefs(run: Run): Promise<{ ok: true; remoteHead: string } | {
 export type Behind = 'pull' | 'rewritten'
 
 export type Rebased =
-  | { kind: 'rebased'; head: string; remoteHead: string; isEmpty: boolean; commands: Commands }
+  | { kind: 'rebased'; head: string; remoteHead: string; isEmpty: boolean; config: Config }
   | { kind: 'behind'; remoteHead: string; how: Behind }
   | { kind: 'conflict'; detail: string }
   | { kind: 'error'; detail: string }
@@ -225,9 +225,9 @@ export async function rebase(run: Run): Promise<Rebased> {
   const count = await wt(run, 'rev-list', '--count', `origin/${run.base}..HEAD`)
   const changed = await wt(run, 'diff', '--quiet', `origin/${run.base}`, 'HEAD')
   const isEmpty = count.out === '0' || changed.ok
-  const commands = parseCommands(await showOnBase(run, '.no-mistakes.yaml'))
-  if ('error' in commands) return { kind: 'error', detail: `.no-mistakes.yaml on origin/${run.base}: ${commands.error}` }
-  return { kind: 'rebased', head, remoteHead, isEmpty, commands }
+  const config = parseConfig(await showOnBase(run, '.no-mistakes.yaml'))
+  if ('error' in config) return { kind: 'error', detail: `.no-mistakes.yaml on origin/${run.base}: ${config.error}` }
+  return { kind: 'rebased', head, remoteHead, isEmpty, config }
 }
 
 export async function headOf(run: Run): Promise<string | undefined> {
@@ -273,8 +273,13 @@ async function withBaseAttributes(run: Run, ...args: string[]): Promise<Ran> {
   return based.ok ? based : wt(run, ...args)
 }
 
+// git's default pathspec glob lets `*` cross `/`, so `dist/*` also drops `dist/a/b.js`.
+function outsideExcluded(run: Run): string[] {
+  return run.exclude.length === 0 ? [] : ['--', '.', ...run.exclude.map(pattern => `:(exclude)${pattern}`)]
+}
+
 export async function diffStat(run: Run): Promise<string> {
-  const r = await withBaseAttributes(run, ...DIFF, '--stat', `origin/${run.base}...HEAD`)
+  const r = await withBaseAttributes(run, ...DIFF, '--stat', `origin/${run.base}...HEAD`, ...outsideExcluded(run))
   return r.out
 }
 
@@ -282,8 +287,8 @@ export async function diffStat(run: Run): Promise<string> {
 // patch cut at DIFF_CAP characters with a note saying so.
 export async function reviewDiff(run: Run): Promise<string> {
   const stat = await diffStat(run)
-  const patch = await wt(run, ...DIFF, `origin/${run.base}...HEAD`)
-  const text = patch.ok ? patch.out : `(git diff failed: ${patch.err})`
+  const patch = await wt(run, ...DIFF, `origin/${run.base}...HEAD`, ...outsideExcluded(run))
+  const text = !patch.ok ? `(git diff failed: ${patch.err})` : patch.out === '' && run.exclude.length > 0 ? '(every changed file matches review.exclude)' : patch.out
   const cut = text.length > DIFF_CAP ? `${text.slice(0, DIFF_CAP)}\n[diff truncated at ${DIFF_CAP} characters of ${text.length}; read the files for the rest]` : text
   return `${stat}\n\n${cut}`
 }
@@ -301,8 +306,6 @@ export async function showOnBase(run: Run, path: string): Promise<string | undef
 
 const COMMAND_NAMES: readonly CommandName[] = ['prepare', 'test', 'lint', 'format']
 
-// One value of the `commands:` block: a plain or quoted scalar on its own
-// line. Empty, `~` or `null` leaves the command unconfigured (undefined).
 function scalar(raw: string): string | undefined | { error: string } {
   const rest = (after: string, value: string) => (/^(\s+#.*)?$/.test(after) ? value : { error: `unexpected text after the closing quote: ${after.trim()}` })
   if (raw === '' || raw.startsWith('#')) return undefined
@@ -321,34 +324,72 @@ function scalar(raw: string): string | undefined | { error: string } {
     }
     return { error: 'the quote is not closed on the same line' }
   }
-  if (/^[>|[\]{}*&!%@`,]|^[-?:](\s|$)/.test(raw)) return { error: 'block, flow, tagged and list values are not read; write the command on one plain line' }
+  if (/^[>|[\]{}*&!%@`,]|^[-?:](\s|$)/.test(raw)) return { error: 'block, flow, tagged, alias and list values are not read; write the value on one line, quoted if it starts with a YAML indicator' }
   const value = raw.replace(/\s#.*$/, '').trim()
-  if (/:(\s|$)/.test(value)) return { error: 'a plain value cannot hold ": "; quote the command' }
+  if (/:(\s|$)/.test(value)) return { error: 'a plain value cannot hold ": "; quote the value' }
   return value === '~' || /^null$/i.test(value) ? undefined : value
 }
 
-// The `commands:` block of .no-mistakes.yaml, read strictly: each entry one
-// of the four names with a one-line value. Anything else under `commands:`
-// (a block or flow value, a nested or unknown key, an open quote) is an error,
-// never a command: `test: >-` must not run `>-` and pass. The rest of the file
-// is not read.
-function parseCommands(text: string | undefined): Commands | { error: string } {
-  const commands: Commands = {}
-  if (text === undefined) return commands
-  let section = ''
-  let indent: string | undefined
-  const seen = new Set<CommandName>()
-  for (const line of text.split('\n').map(l => l.replace(/\s+$/, ''))) {
+const SECTIONS = ['commands', 'review'] as const
+
+function parseConfig(text: string | undefined): Config | { error: string } {
+  const body: Record<(typeof SECTIONS)[number], string[]> = { commands: [], review: [] }
+  let lines: string[] | undefined
+  for (const line of (text ?? '').split('\n').map(l => l.replace(/\s+$/, ''))) {
     if (/^\s*(#.*)?$/.test(line)) continue
-    if (!/^\s/.test(line)) {
-      const top = /^([A-Za-z_]+):(.*)$/.exec(line)
-      section = top?.[1] ?? ''
-      if (section === 'commands' && !/^(\s+#.*)?$/.test(top?.[2] ?? '')) return { error: 'commands: must be followed by one entry per line' }
+    if (/^\s/.test(line)) {
+      lines?.push(line)
       continue
     }
-    if (section !== 'commands') continue
+    const top = /^([A-Za-z_]+):(.*)$/.exec(line)
+    const section = SECTIONS.find(s => s === top?.[1])
+    lines = section === undefined ? undefined : body[section]
+    if (section !== undefined && !/^(\s+#.*)?$/.test(top?.[2] ?? '')) return { error: `${section}: must be followed by one entry per line` }
+  }
+  const commands = readCommands(body.commands)
+  if ('error' in commands) return commands
+  const exclude = readExclude(body.review)
+  if ('error' in exclude) return exclude
+  return { commands, exclude }
+}
+
+const misread = (line: string, section: string) => ({ error: `cannot read "${line.trim()}" under ${section}: (a nested, continued or misaligned line)` })
+
+// A pattern starting with `:` is read by git as pathspec magic, not as a path:
+// `:(exclude):(top)keep.ts` excludes nothing.
+function readExclude(lines: string[]): string[] | { error: string } {
+  const exclude: string[] = []
+  let keyIndent: string | undefined
+  let itemIndent: string | undefined
+  for (const line of lines) {
+    const key = /^( +)([A-Za-z_]+):(.*)$/.exec(line)
+    if (key) {
+      if (keyIndent !== undefined && key[1] !== keyIndent) return misread(line, 'review')
+      if (key[2] !== 'exclude') return { error: `review.${key[2]} is not read; review: holds only exclude:` }
+      if (keyIndent !== undefined) return { error: 'review.exclude is set twice' }
+      if (!/^(\s+#.*)?$/.test(key[3]!)) return { error: 'review.exclude: must be followed by one "- <pattern>" line per pattern' }
+      keyIndent = key[1]
+      continue
+    }
+    const item = /^( +)-(?:\s+(.*))?$/.exec(line)
+    if (!item || keyIndent === undefined || item[1]!.length < keyIndent.length || (itemIndent !== undefined && item[1] !== itemIndent)) return misread(line, 'review')
+    itemIndent = item[1]
+    const value = scalar(item[2] ?? '')
+    if (typeof value === 'object') return { error: `review.exclude: ${value.error}` }
+    if (value === undefined || value.trim() === '') return { error: 'review.exclude has an empty item' }
+    if (/^[:-]/.test(value)) return { error: `review.exclude: "${value}": a pattern cannot begin with : or -` }
+    exclude.push(value)
+  }
+  return exclude
+}
+
+function readCommands(lines: string[]): Commands | { error: string } {
+  const commands: Commands = {}
+  let indent: string | undefined
+  const seen = new Set<CommandName>()
+  for (const line of lines) {
     const entry = /^( +)([A-Za-z_]+):(?:\s+(.*))?$/.exec(line)
-    if (!entry || (indent !== undefined && entry[1] !== indent)) return { error: `cannot read "${line.trim()}" under commands: (a nested, continued or misaligned line)` }
+    if (!entry || (indent !== undefined && entry[1] !== indent)) return misread(line, 'commands')
     indent = entry[1]
     const name = COMMAND_NAMES.find(n => n === entry[2])
     if (!name) return { error: `commands.${entry[2]} is not one of ${COMMAND_NAMES.join(', ')}` }

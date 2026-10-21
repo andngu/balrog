@@ -55,8 +55,12 @@ function findingsBlock(findings: Finding[]): string {
   return untrusted('findings', lines.join('\n'))
 }
 
+function excludedNote(run: Run): string {
+  return run.exclude.length === 0 ? '' : `\nLeft out of this diff by review.exclude in .no-mistakes.yaml (the files still change; Read them when the review needs them): ${run.exclude.join(', ')}`
+}
+
 export function reviewPrompt(run: Run, diff: string): string {
-  return `${header(run)}\n\nThe change under review, git diff origin/${run.base}...HEAD with its stat first:\n${untrusted('diff', diff)}\n\nReview the whole diff against the intent and report findings.`
+  return `${header(run)}\n\nThe change under review, git diff origin/${run.base}...HEAD with its stat first:${excludedNote(run)}\n${untrusted('diff', diff)}\n\nReview the whole diff against the intent and report findings.`
 }
 
 export function documentPrompt(run: Run, stat: string): string {
