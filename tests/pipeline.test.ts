@@ -2673,3 +2673,33 @@ test('a fixer that fails to start for an automatic round fails the run, as it do
   expect(run.note).toContain('could not start the fixer')
   expect(run.decisions).toEqual([{ step: 'review', findingIds: ['r1'], verdict: 'fix', isAuto: true }])
 })
+
+const MISPLACED_AFTER_AUTOFIX = [
+  ['autofix:\n  true\n', 'cannot read "true" under autofix:'],
+  ['autofix: true\n  - x\n', 'cannot read "- x" under autofix:'],
+  ['autofix: true\n- x\n', 'cannot read "- x" under autofix:'],
+  ['autofix: true\nformat: prettier -w .\n', 'cannot read "format: prettier -w ." under autofix:'],
+  ['autofix: true\nexclude:\n  - a\n', 'cannot read "exclude:" under autofix:'],
+] as const
+
+for (const [config, why] of MISPLACED_AFTER_AUTOFIX) {
+  test(`${JSON.stringify(config)} fails the run at rebase with the line it could not read`, async ($, on) => {
+    const w = world($, on, { config: `${CONFIG}${config}` })
+    await start($)
+    const run = lastRun(w)
+    expect(run.steps.rebase).toMatchObject({ status: 'failed' })
+    expect(run.note).toContain('.no-mistakes.yaml on origin/main')
+    expect(run.note).toContain(why)
+    expect(w.spawns).toHaveLength(0)
+  })
+}
+
+for (const tail of ['version: 1\n  nested: 2\n', '---\n']) {
+  test(`${JSON.stringify(tail)} at column 0 after autofix: ends it without failing the run`, async ($, on) => {
+    const w = world($, on, { config: `${CONFIG}autofix: true\n${tail}` })
+    await start($)
+    expect(lastRun(w).steps.rebase).toMatchObject({ status: 'passed' })
+    expect(lastRun(w).autofix).toBe(true)
+    expect(lastRun(w).commands).toEqual({ test: 'npm test', lint: 'npm run lint' })
+  })
+}
