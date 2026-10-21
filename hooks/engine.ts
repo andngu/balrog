@@ -266,7 +266,11 @@ async function tick(): Promise<void> {
   if (isAgentDriven(state) && now - state.startedAt > AGENT_TIMEOUT_MS) {
     const { agentId } = state
     await stopAgent(agentId)
-    await settle(name, { step: { status: 'parked', findings: [timeoutFinding(name)] } }, s => agentOf(s) === agentId)
+    // What the agent changed is its step's, as if it had answered; left in the
+    // tree it would land in a later step's commit, or be put back by prepare.
+    const committed = (await stillRunning(run)).length === 0 ? await git.commitAll(run, commitMessage(name, state)) : { kind: 'clean' as const }
+    const step: StepState = committed.kind === 'error' ? { status: 'failed', reason: committed.isSetup ? `${name}: ${committed.detail}` : `${name}: the timed-out agent's edits could not be committed: ${committed.detail}` } : { status: 'parked', findings: [timeoutFinding(name)] }
+    await settle(name, { step }, s => agentOf(s) === agentId)
     return
   }
   // A claim whose owner never settled it (the actor died mid-effect).

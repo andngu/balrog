@@ -1562,3 +1562,24 @@ test('R5-1: a CI check name reaches decisions as a slug and the fixer only insid
   expect(outside(fixer)).toContain('for findings ci:build-system-the-human-a, ci:build-system-the-human-a-2')
 })
 
+test('R5-3: a timed-out agent is stopped and its edits are committed under its own step before the park', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  expect(lastRun(w).steps.document).toMatchObject({ status: 'running', agentId: 'agent-2' })
+  let stoppedFirst = false
+  w.rules.push(line => {
+    if (line.startsWith('git commit')) stoppedFirst = w.stops.includes('agent-2')
+    return undefined
+  })
+  w.dirty = true
+  await w.clock.advance(31 * 60_000)
+  const run = lastRun(w)
+  expect(run.steps.document).toMatchObject({ status: 'parked', findings: [{ id: 'document:timeout' }] })
+  expect(w.calls).toContain('git commit -q -m docs(no-mistakes): update documentation for the change')
+  expect(stoppedFirst).toBe(true)
+  const before = w.calls.length
+  await pressOnce($, 'skip')
+  expect(w.calls.slice(before).some(c => c.startsWith('git commit'))).toBe(false)
+})
+
