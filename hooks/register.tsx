@@ -74,7 +74,7 @@ export const register: Register = on => {
       readSelected: () => read($, selectedAtom),
       writeSelected: change => update($, selectedAtom, change),
     })
-    await $.command.register({ name: 'no-mistakes', description: 'Gate this branch: review, test, document, lint, push, PR, CI in a disposable worktree', argumentHint: '[intent]' })
+    await $.command.register({ name: 'no-mistakes', description: 'Gate this branch: review, test, document, lint, recheck, push, PR, CI in a disposable worktree', argumentHint: '[intent]' })
     await $.command.register({ name: 'no-mistakes-status', description: 'Reopen the no-mistakes run pane and list what the run needs from you' })
     for (const { verdict: _, ...command } of DECISIONS) await $.command.register(command)
     for (const spec of AGENT_SPECS) await $.agent.register(spec)

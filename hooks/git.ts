@@ -301,19 +301,26 @@ function outsideExcluded(run: Run): string[] {
   return run.exclude.length === 0 ? [] : ['--', '.', ...run.exclude.map(pattern => `:(exclude)${pattern}`)]
 }
 
-export async function diffStat(run: Run): Promise<string> {
-  const r = await withBaseAttributes(run, ...DIFF, '--stat', `origin/${run.base}...HEAD`, ...outsideExcluded(run))
-  return r.out
+const range = (run: Run, from?: string) => `${from ?? `origin/${run.base}`}...HEAD`
+
+async function statRan(run: Run, from?: string): Promise<Ran> {
+  return withBaseAttributes(run, ...DIFF, '--stat', range(run, from), ...outsideExcluded(run))
 }
 
-// The change under review, as text the reviewer is handed: the stat, then the
-// patch cut at DIFF_CAP characters with a note saying so.
-export async function reviewDiff(run: Run): Promise<string> {
-  const stat = await diffStat(run)
-  const patch = await wt(run, ...DIFF, `origin/${run.base}...HEAD`, ...outsideExcluded(run))
-  const text = !patch.ok ? `(git diff failed: ${patch.err})` : patch.out === '' && run.exclude.length > 0 ? '(every changed file matches review.exclude)' : patch.out
-  const cut = text.length > DIFF_CAP ? `${text.slice(0, DIFF_CAP)}\n[diff truncated at ${DIFF_CAP} characters of ${text.length}; read the files for the rest]` : text
-  return `${stat}\n\n${cut}`
+export async function diffStat(run: Run, from?: string): Promise<string> {
+  return (await statRan(run, from)).out
+}
+
+export type GitText = { ok: true; text: string } | { ok: false; reason: string }
+
+export async function reviewDiff(run: Run, from?: string): Promise<GitText> {
+  const stat = await statRan(run, from)
+  if (!stat.ok) return { ok: false, reason: `git diff --stat failed: ${stat.err || 'no error text'}` }
+  const patch = await wt(run, ...DIFF, range(run, from), ...outsideExcluded(run))
+  if (!patch.ok) return { ok: false, reason: `git diff failed: ${patch.err || 'no error text'}` }
+  const body = patch.out === '' && run.exclude.length > 0 ? '(every changed file matches review.exclude)' : patch.out
+  const cut = body.length > DIFF_CAP ? `${body.slice(0, DIFF_CAP)}\n[diff truncated at ${DIFF_CAP} characters of ${body.length}; read the files for the rest]` : body
+  return { ok: true, text: `${stat.out}\n\n${cut}` }
 }
 
 export async function isAncestor(run: Run, older: string, newer: string): Promise<boolean> {
@@ -549,11 +556,9 @@ async function commitOnce(run: Run, message: string): Promise<Committed> {
   return head === undefined ? { kind: 'error', detail: 'cannot read HEAD after the commit' } : { kind: 'committed', head }
 }
 
-// The mod's own commits since the rebased head, as `<sha> <subject>` and a
-// stat each, for the pane and the PR body.
-export async function pipelineCommits(run: Run): Promise<string> {
-  const r = await withBaseAttributes(run, 'log', ...DIFF.slice(1), '--no-show-signature', '--format=%h %s', '--stat', `${run.head}..HEAD`)
-  return r.ok ? r.out : ''
+export async function pipelineCommits(run: Run, from = run.head): Promise<GitText> {
+  const r = await withBaseAttributes(run, 'log', ...DIFF.slice(1), '--no-show-signature', '--format=%h %s', '--stat', `${from}..HEAD`)
+  return r.ok ? { ok: true, text: r.out } : { ok: false, reason: `git log failed: ${r.err || 'no error text'}` }
 }
 
 export async function ghReady(cwd: string): Promise<string | undefined> {
