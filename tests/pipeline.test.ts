@@ -251,7 +251,6 @@ function world($: Engine, on: On, options: Options = {}): World {
   })
   on('state.set', { plugin: PLUGIN, key: 'run' }, (_$, e, next) => {
     if (w.recordFails && e.value?.written?.length) return { deny: 'the state store is full' }
-    // A run stored before review.exclude existed has no `exclude` field.
     const value = options.legacy && e.value ? (({ exclude: _, ...rest }) => rest as Run)(e.value) : e.value
     if (value) w.runs.push(value)
     return next({ ...e, value })
@@ -2192,5 +2191,21 @@ for (const [config, why] of BAD_REVIEW_CONFIGS) {
     expect(run.note).toContain(why)
     expect(w.calls.some(c => c.startsWith('sh -c'))).toBe(false)
     expect(w.spawns).toHaveLength(0)
+  })
+}
+
+test('an unknown top-level section after commands: is ignored and the commands read as before', async ($, on) => {
+  const w = world($, on, { config: `${CONFIG}other:\n  foo: bar\n  - x\n` })
+  await start($)
+  expect(lastRun(w).steps.rebase).toMatchObject({ status: 'passed' })
+  expect(lastRun(w).commands).toEqual({ test: 'npm test', lint: 'npm run lint' })
+})
+
+for (const tail of ['version: 1\n', '---\n']) {
+  test(`${JSON.stringify(tail)} at column 0 after commands: ends the section without failing the run`, async ($, on) => {
+    const w = world($, on, { config: `${CONFIG}${tail}` })
+    await start($)
+    expect(lastRun(w).steps.rebase).toMatchObject({ status: 'passed' })
+    expect(lastRun(w).commands).toEqual({ test: 'npm test', lint: 'npm run lint' })
   })
 }
