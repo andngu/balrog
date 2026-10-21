@@ -735,7 +735,7 @@ test('defect 7: a step left starting by a restart is failed with a clear reason,
   expect(w.spawns).toHaveLength(0)
 })
 
-test('defect 8: no checks reported stays pending until the timeout parks it', async ($, on) => {
+test('defect 8: no checks reported stays pending, then parks as no CI check ran after five minutes', async ($, on) => {
   const w = world($, on, { gh: true })
   w.rules.push(line => (line.startsWith('gh pr checks 7') ? { exitCode: 1, stderr: "no checks reported on the 'feat' branch" } : undefined), ...PR_RULES)
   await start($)
@@ -743,8 +743,8 @@ test('defect 8: no checks reported stays pending until the timeout parks it', as
   await w.clock.advance(30_000)
   expect(lastRun(w).steps.ci).toMatchObject({ status: 'running' })
   expect(lastRun(w).outcome).toBeUndefined()
-  await w.clock.advance(31 * 60_000)
-  expect(lastRun(w).steps.ci).toMatchObject({ status: 'parked', findings: [{ id: 'ci:timeout' }] })
+  await w.clock.advance(5 * 60_000)
+  expect(lastRun(w).steps.ci).toMatchObject({ status: 'parked', findings: [{ id: 'ci:no-checks', action: 'ask-user' }] })
   expect(w.calls.some(c => c.startsWith('git worktree remove'))).toBe(false)
 })
 
@@ -997,7 +997,7 @@ test('item 5: a repository with workflows but no check yet keeps waiting past th
   w.rules.push(line => (line === 'gh api --hostname github.com repos/o/r/actions/workflows --jq .total_count' ? { stdout: '2' } : undefined))
   await start($)
   await passTwo($)
-  await w.clock.advance(5 * 60_000)
+  await w.clock.advance(4 * 60_000)
   expect(lastRun(w).steps.ci).toMatchObject({ status: 'running' })
   expect(lastRun(w).outcome).toBeUndefined()
 })
@@ -1745,4 +1745,19 @@ test('R6-10: the CI fixer gets the failed log of the pushed head, not an older h
   const prompt = w.spawns[2]!.prompt
   expect(prompt).toContain('THIS HEAD FAILURE')
   expect(prompt).not.toContain('OLD HEAD FAILURE')
+})
+
+test('R6-2: when every check is skipped, ci parks on no CI check ran within minutes instead of waiting 30', async ($, on) => {
+  const w = world($, on, { gh: true })
+  w.rules.push(line => (line.startsWith('gh pr checks 7') ? { stdout: '[{"name":"docs","state":"SKIPPED","bucket":"skipping"},{"name":"e2e","state":"SKIPPED","bucket":"skipping"}]' } : undefined), ...PR_RULES)
+  w.rules.push(line => (line.startsWith('gh api') ? { stdout: '3' } : undefined))
+  await start($)
+  await passTwo($)
+  await w.clock.advance(4 * 60_000)
+  expect(lastRun(w).steps.ci).toMatchObject({ status: 'running' })
+  await w.clock.advance(2 * 60_000)
+  const run = lastRun(w)
+  expect(run.steps.ci).toMatchObject({ status: 'parked', findings: [{ id: 'ci:no-checks', severity: 'warning', action: 'ask-user', description: expect.stringContaining('(2 skipped)') }] })
+  expect(run.outcome).toBeUndefined()
+  expect(await w.pane('terminal')).toContain('Parked at ci')
 })

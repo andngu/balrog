@@ -2,7 +2,7 @@ import type { Decision, Finding, Run, StepName, StepState } from '../types'
 import * as git from './git'
 import { io } from './io'
 import { ciFixPrompt, commandPrompt, documentPrompt, FIXER_SYSTEM, prBodyPrompt, reviewPrompt, REVIEWER_SYSTEM } from './prompts'
-import { CI_GRACE_MS, CI_TIMEOUT_MS, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN, slug } from './run'
+import { CI_GRACE_MS, CI_QUIET_MS, CI_TIMEOUT_MS, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN, slug } from './run'
 
 export const REVIEWER = `${PLUGIN}:reviewer`
 export const FIXER = `${PLUGIN}:fixer`
@@ -263,8 +263,18 @@ export async function pollCi(run: Run, claimFix: ClaimFix): Promise<Polled | und
   }
   const unfinished = checks.filter(c => c.bucket === 'pending')
   if (checks.length > 0 && unfinished.length === 0) return polled({ step: { status: 'passed', note: `${checks.length} check(s) passed`, findings: [] } })
-  if (checks.length === 0 && waited > CI_GRACE_MS && (await git.workflowCount(run)) === 0) {
-    return polled({ step: { status: 'skipped', reason: `no CI: the repository defines no Actions workflow and no check reported within ${Math.round(CI_GRACE_MS / 60_000)} minutes` } })
+  if (checks.length === 0 && waited > CI_GRACE_MS) {
+    if ((await git.workflowCount(run)) === 0) {
+      return polled({ step: { status: 'skipped', reason: `no CI: the repository defines no Actions workflow and no check reported within ${Math.round(CI_GRACE_MS / 60_000)} minutes` } })
+    }
+    // Workflows that do not run on pull requests, or that path filters skip,
+    // will never report: nothing ran, so nothing passed, and a human decides
+    // now rather than after the 30-minute timeout.
+    if (waited > CI_QUIET_MS) {
+      const skipped = listed.length > 0 ? ` (${listed.length} skipped)` : ''
+      const finding: Finding = { id: 'ci:no-checks', severity: 'warning', action: 'ask-user', description: `no CI check ran on ${run.remoteHead.slice(0, 12)} within ${Math.round(CI_QUIET_MS / 60_000)} minutes${skipped}: the workflows may not run on pull requests, or path filters skipped them. Approve to continue without CI` }
+      return polled({ step: { status: 'parked', findings: [finding] } })
+    }
   }
   return timedOut ? polled(pending) : undefined
 }

@@ -6,6 +6,7 @@ export const MAX_FIX_ROUNDS = 3
 export const CI_POLL_MS = 30_000
 export const CI_TIMEOUT_MS = 30 * 60_000
 export const CI_GRACE_MS = 2 * 60_000
+export const CI_QUIET_MS = 5 * 60_000
 export const AGENT_TIMEOUT_MS = 30 * 60_000
 
 // Every agent id a run has recorded, mirrored for the guard's failure path
