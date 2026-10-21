@@ -331,32 +331,34 @@ function scalar(raw: string): string | undefined | { error: string } {
 }
 
 const SECTIONS = ['commands', 'review'] as const
+const FLAGS = ['autofix', 'document'] as const
 
 type Section = (typeof SECTIONS)[number]
+type Flag = (typeof FLAGS)[number]
 
 function parseConfig(text: string | undefined): Config | { error: string } {
   const body: Record<Section, string[]> = { commands: [], review: [] }
-  let section: Section | 'autofix' | undefined
-  let autofix: boolean | undefined
+  const flags: Partial<Record<Flag, boolean>> = {}
+  let section: Section | Flag | undefined
   for (const line of (text ?? '').split('\n').map(l => l.replace(/\s+$/, ''))) {
     if (/^\s*(#.*)?$/.test(line)) continue
     if (/^\s/.test(line)) {
-      if (section === 'autofix') return { error: `cannot read "${line.trim()}" under autofix: the value goes on the autofix: line` }
+      if (section !== undefined && isFlag(section)) return { error: `cannot read "${line.trim()}" under ${section}: the value goes on the ${section}: line` }
       if (section !== undefined) body[section].push(line)
       continue
     }
     const top = /^([A-Za-z_]+):(.*)$/.exec(line)
-    const known = top?.[1] === 'autofix' ? 'autofix' : SECTIONS.find(s => s === top?.[1])
+    const known = FLAGS.find(f => f === top?.[1]) ?? SECTIONS.find(s => s === top?.[1])
     const misplaced = /^-(\s|$)/.test(line) || (top !== null && (top[1] === 'exclude' || COMMAND_NAMES.some(n => n === top[1])))
     if (section !== undefined && known === undefined && misplaced) {
-      return { error: `cannot read "${line.trim()}" under ${section}: entries must be indented under their section key, and commands:, review: and autofix: are the only top-level keys read` }
+      return { error: `cannot read "${line.trim()}" under ${section}: entries must be indented under their section key, and commands:, review:, autofix: and document: are the only top-level keys read` }
     }
     section = known
-    if (known === 'autofix') {
-      if (autofix !== undefined) return { error: 'autofix is set twice' }
-      const read = readAutofix(line)
+    if (known !== undefined && isFlag(known)) {
+      if (flags[known] !== undefined) return { error: `${known} is set twice` }
+      const read = readFlag(known, line)
       if (typeof read === 'object') return read
-      autofix = read
+      flags[known] = read ?? DEFAULT_FLAGS[known]
     } else if (known !== undefined && !/^(\s+#.*)?$/.test(top?.[2] ?? '')) {
       return { error: `${known}: must be followed by one entry per line` }
     }
@@ -365,18 +367,22 @@ function parseConfig(text: string | undefined): Config | { error: string } {
   if ('error' in commands) return commands
   const exclude = readExclude(body.review)
   if ('error' in exclude) return exclude
-  return { commands, exclude, autofix: autofix ?? false }
+  return { commands, exclude, autofix: flags.autofix ?? DEFAULT_FLAGS.autofix, document: flags.document ?? DEFAULT_FLAGS.document }
 }
 
-function readAutofix(line: string): boolean | { error: string } {
-  const entry = /^autofix:(?:\s+(.*))?$/.exec(line)
-  if (!entry) return { error: 'autofix: must be followed by a space and true or false' }
+const isFlag = (key: string): key is Flag => FLAGS.some(f => f === key)
+
+const DEFAULT_FLAGS: Record<Flag, boolean> = { autofix: false, document: true }
+
+function readFlag(key: Flag, line: string): boolean | undefined | { error: string } {
+  const entry = new RegExp(`^${key}:(?:\\s+(.*))?$`).exec(line)
+  if (!entry) return { error: `${key}: must be followed by a space and true or false` }
   const raw = entry[1] ?? ''
-  if (/^["']/.test(raw)) return { error: 'autofix: must be true or false, unquoted' }
+  if (/^["']/.test(raw)) return { error: `${key}: must be true or false, unquoted` }
   const value = scalar(raw)
-  if (typeof value === 'object') return { error: `autofix: ${value.error}` }
-  if (value === undefined) return false
-  if (value !== 'true' && value !== 'false') return { error: `autofix: "${value}" is not true or false` }
+  if (typeof value === 'object') return { error: `${key}: ${value.error}` }
+  if (value === undefined) return undefined
+  if (value !== 'true' && value !== 'false') return { error: `${key}: "${value}" is not true or false` }
   return value === 'true'
 }
 

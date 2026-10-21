@@ -115,7 +115,10 @@ const review: StepDef = {
 
 const document: StepDef = {
   name: 'document',
-  start: async run => running(run, FIXER, documentPrompt(run, await git.diffStat(run)), 'document'),
+  async start(run) {
+    if (!run.document) return { step: { status: 'skipped', reason: 'document: false in .no-mistakes.yaml' } }
+    return running(run, FIXER, documentPrompt(run, await git.diffStat(run)), 'document')
+  },
   async check(_run, answer) {
     const parsed = answerOf('document', answer)
     return 'outcome' in parsed ? parsed.outcome : { step: gate(parsed.findings) }

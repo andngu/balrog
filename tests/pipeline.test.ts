@@ -256,7 +256,7 @@ function world($: Engine, on: On, options: Options = {}): World {
   })
   on('state.set', { plugin: PLUGIN, key: 'run' }, (_$, e, next) => {
     if (w.recordFails && e.value?.written?.length) return { deny: 'the state store is full' }
-    const value = options.legacy && e.value ? (({ exclude: _, autofix: __, ...rest }) => rest as Run)(e.value) : e.value
+    const value = options.legacy && e.value ? (({ exclude: _, autofix: __, document: ___, ...rest }) => rest as Run)(e.value) : e.value
     if (value) w.runs.push(value)
     return next({ ...e, value })
   })
@@ -2701,5 +2701,92 @@ for (const tail of ['version: 1\n  nested: 2\n', '---\n']) {
     expect(lastRun(w).steps.rebase).toMatchObject({ status: 'passed' })
     expect(lastRun(w).autofix).toBe(true)
     expect(lastRun(w).commands).toEqual({ test: 'npm test', lint: 'npm run lint' })
+  })
+}
+
+const DOCUMENT_VALUES = [
+  ['document: true\n', true],
+  ['document: true # on\n', true],
+  ['document: false\n', false],
+  ['document: false # my docs are mine\n', false],
+  ['document: ~\n', true],
+  ['document: null\n', true],
+  ['document:\n', true],
+  ['', true],
+] as const
+
+for (const [config, document] of DOCUMENT_VALUES) {
+  test(`${JSON.stringify(config)} after commands: reads document as ${document}`, async ($, on) => {
+    const w = world($, on, { config: `${CONFIG}${config}` })
+    await start($)
+    expect(lastRun(w).steps.rebase).toMatchObject({ status: 'passed' })
+    expect(lastRun(w).document).toBe(document)
+    expect(lastRun(w).commands).toEqual({ test: 'npm test', lint: 'npm run lint' })
+  })
+}
+
+test('document: false skips the document step with its reason and the run continues to lint', async ($, on) => {
+  const w = world($, on, { config: `${CONFIG}document: false\n` })
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  const run = lastRun(w)
+  expect(run.steps.document).toMatchObject({ status: 'skipped', reason: 'document: false in .no-mistakes.yaml' })
+  expect(run.steps.lint).toMatchObject({ status: 'passed' })
+  expect(w.spawns.map(s => s.description)).toEqual([expect.stringContaining('no-mistakes review')])
+  expect(w.calls.some(c => c.includes('documentation'))).toBe(false)
+})
+
+for (const config of [CONFIG, `${CONFIG}document: true\n`]) {
+  test(`${config === CONFIG ? 'no document key' : 'document: true'} runs the document agent after the test step`, async ($, on) => {
+    const w = world($, on, { config })
+    await start($)
+    await complete($, 'agent-1', answer([]))
+    expect(lastRun(w).steps.document).toMatchObject({ status: 'running', agentId: 'agent-2' })
+    expect(w.spawns[1]).toMatchObject({ description: expect.stringContaining('no-mistakes document') })
+  })
+}
+
+test('a run stored before document: existed (no document field) still runs the document step, whatever the config says', async ($, on) => {
+  const w = world($, on, { legacy: true, config: `${CONFIG}document: false\n` })
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  const run = lastRun(w)
+  expect(run.document).toBeUndefined()
+  expect(run.steps.document).toMatchObject({ status: 'running', agentId: 'agent-2' })
+})
+
+const BAD_DOCUMENT_CONFIGS = [
+  ['document: yes\n', '"yes" is not true or false'],
+  ['document: False\n', '"False" is not true or false'],
+  ['document: [false]\n', 'block, flow'],
+  ['document: "false"\n', 'unquoted'],
+  ['document:false\n', 'a space and true or false'],
+  ['document: false\ndocument: true\n', 'document is set twice'],
+  ['review:\n  document: false\n', 'review.document is not read'],
+  ['document:\n  false\n', 'cannot read "false" under document:'],
+  ['document: false\n- x\n', 'cannot read "- x" under document:'],
+  ['document: false\nformat: prettier -w .\n', 'cannot read "format: prettier -w ." under document:'],
+  ['document: false\nexclude:\n  - a\n', 'cannot read "exclude:" under document:'],
+] as const
+
+for (const [config, why] of BAD_DOCUMENT_CONFIGS) {
+  test(`${JSON.stringify(config)} fails the run at rebase with the line it could not read`, async ($, on) => {
+    const w = world($, on, { config: `${CONFIG}${config}` })
+    await start($)
+    const run = lastRun(w)
+    expect(run.steps.rebase).toMatchObject({ status: 'failed' })
+    expect(run.note).toContain('.no-mistakes.yaml on origin/main')
+    expect(run.note).toContain(why)
+    expect(w.spawns).toHaveLength(0)
+  })
+}
+
+for (const config of ['review:\n  exclude:\n    - a.lock\ndocument: false\nautofix: true\n', 'commands:\n  test: npm test\ndocument: false\nautofix: true\n']) {
+  test(`document: after ${config.split(':')[0]}: ends that section and is read, with later keys still read`, async ($, on) => {
+    const w = world($, on, { config })
+    await start($)
+    expect(lastRun(w).steps.rebase).toMatchObject({ status: 'passed' })
+    expect(lastRun(w).document).toBe(false)
+    expect(lastRun(w).autofix).toBe(true)
   })
 }
