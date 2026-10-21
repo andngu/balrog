@@ -37,7 +37,7 @@ Each value is one line, plain or quoted (`"..."` reads only `\"` and `\\` escape
 What the mod runs on your behalf is not held to your permission rules or sandbox:
 
 - The configured commands run as `sh -c <command>` in the worktree, as you, with no sandbox and your full environment (`GH_TOKEN`, cloud credentials, SSH agent). They run code the branch can change: `npm test` runs the branch's tests and `package.json` scripts, and the fixer may have edited both. Configure only commands you would run by hand on this branch.
-- The mod's own `git` and `gh` calls (fetch, rebase, commit, push, `gh pr create`, `gh pr checks`, `gh run view`) run outside your permission rules, with your credentials.
+- The mod's own `git` and `gh` calls (fetch, rebase, commit, push, `gh pr list`, `gh pr create`, `gh pr checks`, `gh run view`) run outside your permission rules, with your credentials.
 - A failing test or lint command goes to the fixer once with the output; the mod commits the fixer's edits and re-runs the command, and a command that still fails parks the step. The fixer's commits are not reviewed again by the reviewer.
 
 Known limitations: hooks are off for every git call, so a `pre-push` hook such as git-lfs's does not run, and LFS objects of the branch are not uploaded by the push. Run `git lfs push origin <branch>` yourself where the repository uses LFS. A tool output too large for the transcript may be saved by the engine outside the worktree, where the agents cannot read it.
