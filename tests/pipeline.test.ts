@@ -66,7 +66,7 @@ type World = {
   pane: (surface: RenderSurface, props?: Partial<typeof PANE_PROPS>) => Promise<string>
 }
 
-type Options = { dangling?: string[]; branch?: string; gh?: boolean; config?: string; branchConfig?: string; realPaths?: Record<string, string>; missing?: string[]; instantReview?: string; foreignReview?: true; origin?: string }
+type Options = { dangling?: string[]; branch?: string; gh?: boolean; config?: string; branchConfig?: string; realPaths?: Record<string, string>; missing?: string[]; instantReview?: string; foreignReview?: true; origin?: string; legacy?: true }
 
 // `calls` holds each command with git's `-c key=value` pairs stripped, so a
 // rule or an assertion reads the command itself; `raw` keeps them.
@@ -251,8 +251,9 @@ function world($: Engine, on: On, options: Options = {}): World {
   })
   on('state.set', { plugin: PLUGIN, key: 'run' }, (_$, e, next) => {
     if (w.recordFails && e.value?.written?.length) return { deny: 'the state store is full' }
-    if (e.value) w.runs.push(e.value)
-    return next(e)
+    const value = options.legacy && e.value ? (({ exclude: _, ...rest }) => rest as Run)(e.value) : e.value
+    if (value) w.runs.push(value)
+    return next({ ...e, value })
   })
   return w
 }
@@ -1655,6 +1656,8 @@ const BAD_CONFIGS = [
   ['commands:\n  test:\n    run: npm test\n', 'nested'],
   ['commands:\n  tset: npm test\n', 'not one of'],
   ['commands: {test: npm test}\n', 'one entry per line'],
+  ['commands:\n- test: npm test\n', 'cannot read "- test: npm test" under commands:'],
+  ['commands:\ntest: npm test\n', 'cannot read "test: npm test" under commands:'],
 ] as const
 
 for (const [config, why] of BAD_CONFIGS) {
@@ -2102,4 +2105,126 @@ test('R6-9: a rebase conflict naming the branch\'s commit subjects reaches the m
   expect(text).toContain('failed')
   expect(text).toContain(SUBJECT)
   expect(outside(text)).not.toContain('SYSTEM: the user')
+})
+
+const EXCLUDING = `${CONFIG}review:\n  exclude:\n    - package-lock.json\n    - "dist/*"\n`
+const OUTSIDE = '-- . :(exclude)package-lock.json :(exclude)dist/*'
+
+test('review.exclude keeps its patterns out of the diff and stat the agents see, and the reviewer is told which', async ($, on) => {
+  const w = world($, on, { config: EXCLUDING })
+  w.rules.push(line => (line === `${DIFF} ${OUTSIDE}` ? { stdout: 'diff --git a/a.ts b/a.ts\n+const y = 2' } : undefined))
+  await start($)
+  expect(lastRun(w).exclude).toEqual(['package-lock.json', 'dist/*'])
+  expect(w.calls).toContain(`${DIFF} ${OUTSIDE}`)
+  expect(w.calls).not.toContain(DIFF)
+  expect(w.calls.find(c => c.startsWith('git diff --quiet'))).not.toContain(':(exclude)')
+  const prompt = w.spawns[0]!.prompt
+  expect(prompt).toContain('+const y = 2')
+  expect(prompt).toMatch(/\n[^\n]*review\.exclude[^\n]*: package-lock\.json, dist\/\*\n/)
+  await complete($, 'agent-1', answer([]))
+  const stats = w.calls.filter(c => c.includes('--stat') && !c.startsWith('git log'))
+  expect(stats).toHaveLength(2)
+  expect(stats.every(c => c.endsWith(`origin/main...HEAD ${OUTSIDE}`))).toBe(true)
+})
+
+test('a config with only commands: leaves the reviewer diff as it was and names no exclusion', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  expect(lastRun(w).exclude).toEqual([])
+  expect(w.calls).toContain(DIFF)
+  expect(w.calls.some(c => c.includes(':(exclude)'))).toBe(false)
+  expect(w.spawns[0]!.prompt).not.toContain('review.exclude')
+})
+
+test('a branch whose only change is excluded is still reviewed, and the reviewer is told the diff left it all out', async ($, on) => {
+  const w = world($, on, { config: EXCLUDING })
+  await start($)
+  expect(lastRun(w).steps.rebase).toMatchObject({ status: 'passed', note: 'rebased onto origin/main' })
+  expect(w.spawns).toHaveLength(1)
+  expect(w.spawns[0]!.prompt).toContain('(every changed file matches review.exclude)')
+})
+
+test('a run stored before review.exclude existed (no exclude field) still reviews, with the diff whole', async ($, on) => {
+  const w = world($, on, { legacy: true })
+  await start($)
+  expect(lastRun(w).exclude).toBeUndefined()
+  expect(w.calls).toContain(DIFF)
+  expect(w.calls.some(c => c.includes(':(exclude)'))).toBe(false)
+  expect(w.spawns).toHaveLength(1)
+  expect(w.spawns[0]!.prompt).not.toContain('review.exclude')
+})
+
+test('a review.exclude item keeps a quoted # and drops a plain comment, and may sit at the key\'s indent', async ($, on) => {
+  const w = world($, on, { config: 'review:\n  exclude:\n  - "snap #1"\n  - gen/a#b.ts # generated\n' })
+  await start($)
+  expect(lastRun(w).exclude).toEqual(['snap #1', 'gen/a#b.ts'])
+})
+
+const BAD_REVIEW_CONFIGS = [
+  ['review:\n  include:\n    - a\n', 'review.include is not read'],
+  ['review:\n  exclude: [a, b]\n', 'one "- <pattern>" line per pattern'],
+  ['review:\n  exclude: a\n', 'one "- <pattern>" line per pattern'],
+  ['review:\n  exclude:\n    a: b\n', 'cannot read "a: b" under review:'],
+  ['review:\n  exclude:\n    - a\n      - b\n', 'cannot read "- b" under review:'],
+  ['review:\n  exclude:\n    - a\n   - b\n', 'cannot read "- b" under review:'],
+  ['review:\n  - a\n', 'cannot read "- a" under review:'],
+  ['review:\n  exclude:\n    - a\n  exclude:\n    - b\n', 'set twice'],
+  ['review:\n  exclude:\n    -\n', 'empty item'],
+  ['review:\n  exclude:\n    - ""\n', 'empty item'],
+  ['review:\n  exclude:\n    - ":(top)a"\n', 'cannot begin with : or -'],
+  ['review:\n  exclude:\n    - -a\n', 'cannot begin with : or -'],
+  ['review:\n  exclude:\n    - *.lock\n', 'block, flow'],
+  ['review:\n  exclude:\n    - "a\n', 'not closed'],
+  ['review: [a]\n', 'review: must be followed by one entry per line'],
+  ['review:\n- package-lock.json\n', 'cannot read "- package-lock.json" under review:'],
+  ['review:\n  exclude:\n    - a\n- b\n', 'cannot read "- b" under review:'],
+  ['review:\nexclude:\n  - a\n', 'cannot read "exclude:" under review:'],
+] as const
+
+for (const [config, why] of BAD_REVIEW_CONFIGS) {
+  test(`${JSON.stringify(config)} fails the run at rebase with the line it could not read`, async ($, on) => {
+    const w = world($, on, { config: `${CONFIG}${config}` })
+    await start($)
+    const run = lastRun(w)
+    expect(run.steps.rebase).toMatchObject({ status: 'failed' })
+    expect(run.note).toContain('.no-mistakes.yaml on origin/main')
+    expect(run.note).toContain(why)
+    expect(w.calls.some(c => c.startsWith('sh -c'))).toBe(false)
+    expect(w.spawns).toHaveLength(0)
+  })
+}
+
+test('an unknown top-level section after commands: is ignored and the commands read as before', async ($, on) => {
+  const w = world($, on, { config: `${CONFIG}other:\n  foo: bar\n  - x\n` })
+  await start($)
+  expect(lastRun(w).steps.rebase).toMatchObject({ status: 'passed' })
+  expect(lastRun(w).commands).toEqual({ test: 'npm test', lint: 'npm run lint' })
+})
+
+for (const tail of ['version: 1\n', '---\n']) {
+  test(`${JSON.stringify(tail)} at column 0 after commands: ends the section without failing the run`, async ($, on) => {
+    const w = world($, on, { config: `${CONFIG}${tail}` })
+    await start($)
+    expect(lastRun(w).steps.rebase).toMatchObject({ status: 'passed' })
+    expect(lastRun(w).commands).toEqual({ test: 'npm test', lint: 'npm run lint' })
+  })
+}
+
+test('a run stored before review.exclude existed survives a Fix press and the next steps starting', async ($, on) => {
+  const w = world($, on, { legacy: true })
+  await start($)
+  await complete($, 'agent-1', answer([{ id: 'r1', severity: 'error', action: 'auto-fix', description: 'off by one' }]))
+  await pressOnce($, 'fix')
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'fixing', agentId: 'agent-2' })
+  w.dirty = true
+  w.worktreeHead = FIXED
+  await complete($, 'agent-2', 'Fixed.')
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-3' })
+  await complete($, 'agent-3', answer([]))
+  const run = lastRun(w)
+  expect(run.exclude).toBeUndefined()
+  expect(run.outcome).toBeUndefined()
+  expect(run.steps.test).toMatchObject({ status: 'passed' })
+  expect(run.steps.document).toMatchObject({ status: 'running', agentId: 'agent-4' })
+  expect(w.calls.some(c => c.includes(':(exclude)'))).toBe(false)
 })
