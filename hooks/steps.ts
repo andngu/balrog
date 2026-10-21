@@ -2,7 +2,7 @@ import type { Decision, Finding, Run, StepName, StepState } from '../types'
 import * as git from './git'
 import { io } from './io'
 import { ciFixPrompt, commandPrompt, documentPrompt, FIXER_SYSTEM, prBodyPrompt, reviewPrompt, REVIEWER_SYSTEM } from './prompts'
-import { CI_GRACE_MS, CI_TIMEOUT_MS, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN } from './run'
+import { CI_GRACE_MS, CI_QUIET_MS, CI_TIMEOUT_MS, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN, slug } from './run'
 
 export const REVIEWER = `${PLUGIN}:reviewer`
 export const FIXER = `${PLUGIN}:fixer`
@@ -179,6 +179,8 @@ const pr: StepDef = {
   async start(run) {
     const notReady = await git.ghReady(run.repo)
     if (notReady) return { step: { status: 'skipped', reason: notReady } }
+    const target = await git.ghRepo(run)
+    if ('error' in target) return { step: { status: 'skipped', reason: target.error } }
     const existing = await git.prView(run)
     if (existing) return { step: { status: 'passed', note: `existing PR ${existing.url}`, findings: [] }, patch: { prUrl: existing.url, prNumber: existing.number } }
     const stat = await git.diffStat(run)
@@ -234,7 +236,17 @@ export async function pollCi(run: Run, claimFix: ClaimFix): Promise<Polled | und
   const failing = checks.filter(c => c.bucket === 'fail' || c.bucket === 'cancel').map(c => c.name)
   if (failing.length > 0) {
     const round = fixRounds(run, 'ci') + 1
-    const findings: Finding[] = failing.map(name => ({ id: `ci:${name}`, severity: 'error', action: 'auto-fix', description: `CI check "${name}" failed` }))
+    // A check name is the branch's to choose (a workflow it edits), so its id is a slug.
+    // Each id is checked against every id already issued, so a suffixed id cannot
+    // collide with a real slug (checks 'x', 'x', 'x-2' get ci:x, ci:x-2, ci:x-2-2).
+    const issued: string[] = []
+    const findings: Finding[] = failing.map(name => {
+      const base = `ci:${slug(name)}`
+      let id = base
+      for (let n = 2; issued.includes(id); n++) id = `${base}-${n}`
+      issued.push(id)
+      return { id, severity: 'error', action: 'auto-fix', description: `CI check "${name}" failed` }
+    })
     if (round > MAX_FIX_ROUNDS) return polled({ step: { status: 'parked', findings } })
     const claimed = await claimFix(findings, round)
     if (!claimed) return undefined
@@ -251,8 +263,18 @@ export async function pollCi(run: Run, claimFix: ClaimFix): Promise<Polled | und
   }
   const unfinished = checks.filter(c => c.bucket === 'pending')
   if (checks.length > 0 && unfinished.length === 0) return polled({ step: { status: 'passed', note: `${checks.length} check(s) passed`, findings: [] } })
-  if (checks.length === 0 && waited > CI_GRACE_MS && (await git.workflowCount(run)) === 0) {
-    return polled({ step: { status: 'skipped', reason: `no CI: the repository defines no Actions workflow and no check reported within ${Math.round(CI_GRACE_MS / 60_000)} minutes` } })
+  if (checks.length === 0 && waited > CI_GRACE_MS) {
+    if ((await git.workflowCount(run)) === 0) {
+      return polled({ step: { status: 'skipped', reason: `no CI: the repository defines no Actions workflow and no check reported within ${Math.round(CI_GRACE_MS / 60_000)} minutes` } })
+    }
+    // Workflows that do not run on pull requests, or that path filters skip,
+    // will never report: nothing ran, so nothing passed, and a human decides
+    // now rather than after the 30-minute timeout.
+    if (waited > CI_QUIET_MS) {
+      const skipped = listed.length > 0 ? ` (${listed.length} skipped)` : ''
+      const finding: Finding = { id: 'ci:no-checks', severity: 'warning', action: 'ask-user', description: `no CI check ran on ${run.remoteHead.slice(0, 12)} within ${Math.round(CI_QUIET_MS / 60_000)} minutes${skipped}: the workflows may not run on pull requests, or path filters skipped them. Approve to continue without CI` }
+      return polled({ step: { status: 'parked', findings: [finding] } })
+    }
   }
   return timedOut ? polled(pending) : undefined
 }

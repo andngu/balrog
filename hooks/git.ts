@@ -22,14 +22,18 @@ export const git = (cwd: string, ...args: string[]) => exec(['git', ...HOOKS_OFF
 
 export const gh = (cwd: string, args: string[], stdin?: string) => exec(['gh', ...args], cwd, stdin)
 
+// git's own words for a signer that did not sign (gpg, gpgsm, ssh-keygen);
+// a bare /sign/ would take a commit subject like "Redesign" for one.
+const SIGNING = /gpg failed to sign|failed to sign the data|cannot run (gpg|gpgsm|ssh-keygen)|signingkey|ssh signing|failed to write commit object/i
+
 // A commit git refuses for the user's own setup rather than for anything the
 // run did: no identity, or signing that is on and does not work.
 function setupProblem(err: string): string | undefined {
   if (/tell me who you are|unable to auto-detect email|empty ident name|identity unknown/i.test(err)) {
     return 'git identity not set, so git cannot commit: run git config --global user.name "<name>" and git config --global user.email "<email>", then run again'
   }
-  if (/sign|failed to write commit object/i.test(err)) {
-    const line = err.split(/[\r\n]+/).find(l => /sign/i.test(l)) ?? err.split('\n')[0]
+  if (SIGNING.test(err)) {
+    const line = err.split(/[\r\n]+/).find(l => SIGNING.test(l)) ?? err.split('\n')[0]
     return `commit signing failed (commit.gpgsign is on and the signer did not sign): ${line?.trim().replace(/[:.]+$/, '')}. Make a signed git commit work in a terminal, then run again`
   }
   return undefined
@@ -209,9 +213,11 @@ export async function rebase(run: Run): Promise<Rebased> {
   // would move the user's other branches or their stash from the worktree.
   const rebased = await wt(run, 'rebase', '--no-update-refs', '--no-autostash', `origin/${run.base}`)
   if (!rebased.ok) {
+    // A stop with unmerged paths is a conflict whatever the output says.
+    const unmerged = await wt(run, 'ls-files', '--unmerged')
     await wt(run, 'rebase', '--abort')
     const detail = rebased.err || rebased.out
-    const setup = setupProblem(detail)
+    const setup = unmerged.ok && unmerged.out === '' ? setupProblem(detail) : undefined
     return setup === undefined ? { kind: 'conflict', detail: detail.slice(0, 2000) } : { kind: 'error', detail: setup }
   }
   const head = await headOf(run)
@@ -259,8 +265,16 @@ const DIFF = ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--text']
 
 const DIFF_CAP = 120_000
 
+// `--text` does not reach a stat, so a stat reads attributes from
+// origin/<base>: a `-diff` the branch adds cannot show its code as "Bin". Git
+// before 2.40 has no --attr-source and reads the branch's.
+async function withBaseAttributes(run: Run, ...args: string[]): Promise<Ran> {
+  const based = await wt(run, `--attr-source=origin/${run.base}`, ...args)
+  return based.ok ? based : wt(run, ...args)
+}
+
 export async function diffStat(run: Run): Promise<string> {
-  const r = await wt(run, ...DIFF, '--stat', `origin/${run.base}...HEAD`)
+  const r = await withBaseAttributes(run, ...DIFF, '--stat', `origin/${run.base}...HEAD`)
   return r.out
 }
 
@@ -381,13 +395,25 @@ export type Committed = { kind: 'clean' } | { kind: 'committed'; head: string } 
 // the untracked files only those a run agent wrote (`run.written`) and the
 // repository does not ignore. What a command leaves behind (node_modules,
 // coverage, caches) stays out, and the user's own excludes still apply.
-export async function commitAll(run: Run, message: string): Promise<Committed> {
+// Commits run one at a time: an answer's and a timeout's would otherwise race
+// on the worktree's index.lock.
+let committing: Promise<unknown> = Promise.resolve()
+
+export function commitAll(run: Run, message: string): Promise<Committed> {
+  const done = committing.then(() => commitOnce(run, message))
+  committing = done.catch(() => undefined)
+  return done
+}
+
+async function commitOnce(run: Run, message: string): Promise<Committed> {
   const tracked = await wt(run, 'add', '-u')
   if (!tracked.ok) return { kind: 'error', detail: tracked.err }
   if (run.written?.length) {
     const fresh = await wt(run, '--literal-pathspecs', 'ls-files', '-z', '--others', '--exclude-standard', '--', ...run.written)
     if (!fresh.ok) return { kind: 'error', detail: fresh.err }
-    const paths = fresh.out.split('\0').filter(p => p !== '')
+    // A recorded file that became a directory lists what is under it, which
+    // no agent wrote: only exact entries are added.
+    const paths = fresh.out.split('\0').filter(p => run.written?.includes(p))
     const added = paths.length === 0 ? fresh : await wt(run, '--literal-pathspecs', 'add', '--', ...paths)
     if (!added.ok) return { kind: 'error', detail: added.err }
   }
@@ -405,7 +431,7 @@ export async function commitAll(run: Run, message: string): Promise<Committed> {
 // The mod's own commits since the rebased head, as `<sha> <subject>` and a
 // stat each, for the pane and the PR body.
 export async function pipelineCommits(run: Run): Promise<string> {
-  const r = await wt(run, 'log', '--no-color', '--no-show-signature', '--format=%h %s', '--stat', `${run.head}..HEAD`)
+  const r = await withBaseAttributes(run, 'log', ...DIFF.slice(1), '--no-show-signature', '--format=%h %s', '--stat', `${run.head}..HEAD`)
   return r.ok ? r.out : ''
 }
 
@@ -415,28 +441,54 @@ export async function ghReady(cwd: string): Promise<string | undefined> {
   return r.err.includes('not') || r.out.includes('not') || r.err === '' ? 'gh is missing or not authenticated' : r.err.slice(0, 300)
 }
 
+export type GhRepo = { host: string; slug: string; path: string }
+
+// The GitHub repository origin names, which is where the mod pushes. Left to
+// itself gh picks an `upstream` or `github` remote, or its own default, and
+// would open the PR or read CI somewhere else.
+export async function ghRepo(run: Run): Promise<GhRepo | { error: string }> {
+  const r = await git(run.repo, 'remote', 'get-url', 'origin')
+  // `scheme://[user@]host[:port]/owner/name` or scp-like `[user@]host:owner/name`.
+  const m = r.ok ? (/^[a-z+]+:\/\/(?:[^@/]+@)?([^/:@]+)(?::\d+)?\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(r.out) ?? /^(?:[^@/:]+@)?([^/:@]+):([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(r.out)) : null
+  // A credential in the URL stays out of the reason the pane shows.
+  if (!m) return { error: `origin (${r.ok ? r.out.replace(/\/\/[^@/]+@/, '//') : r.err}) does not name a GitHub repository gh can reach` }
+  const [, host, owner, name] = m as unknown as [string, string, string, string]
+  const path = `${owner}/${name}`
+  return { host, path, slug: host === 'github.com' ? path : `${host}/${path}` }
+}
+
+// A gh call pinned to origin's repository.
+async function ghOn(run: Run, args: string[], stdin?: string): Promise<Ran> {
+  const target = await ghRepo(run)
+  if ('error' in target) return { ok: false, code: -1, out: '', err: target.error }
+  return gh(run.repo, [...args, '--repo', target.slug], stdin)
+}
+
 export type PrRef = { url: string; number: number }
 
+// Only an open PR from origin's own <branch> is the run's: a merged or closed
+// one is history, and a fork's PR of the same branch name is someone else's.
 export async function prView(run: Run): Promise<PrRef | undefined> {
-  const r = await gh(run.repo, ['pr', 'view', run.branch, '--json', 'url,number'])
+  const r = await ghOn(run, ['pr', 'list', '--head', run.branch, '--state', 'open', '--json', 'url,number,isCrossRepository', '--limit', '10'])
   if (!r.ok) return undefined
   try {
-    const v = JSON.parse(r.out) as { url?: unknown; number?: unknown }
-    return typeof v.url === 'string' && typeof v.number === 'number' ? { url: v.url, number: v.number } : undefined
+    const list = JSON.parse(r.out) as { url?: unknown; number?: unknown; isCrossRepository?: unknown }[]
+    const v = Array.isArray(list) ? list.find(p => p.isCrossRepository === false) : undefined
+    return v && typeof v.url === 'string' && typeof v.number === 'number' ? { url: v.url, number: v.number } : undefined
   } catch {
     return undefined
   }
 }
 
 export async function prCreate(run: Run, title: string, body: string): Promise<PrRef | { error: string }> {
-  const r = await gh(run.repo, ['pr', 'create', '--base', run.base, '--head', run.branch, '--title', title, '--body-file', '-'], body)
+  const r = await ghOn(run, ['pr', 'create', '--base', run.base, '--head', run.branch, '--title', title, '--body-file', '-'], body)
   if (!r.ok) return { error: (r.err || r.out).slice(0, 1000) }
   const url = r.out.split('\n').find(line => line.startsWith('https://')) ?? r.out
   return (await prView(run)) ?? { url, number: Number(url.split('/').pop()) || 0 }
 }
 
 export async function prHead(run: Run, number: number): Promise<string | undefined> {
-  const r = await gh(run.repo, ['pr', 'view', String(number), '--json', 'headRefOid'])
+  const r = await ghOn(run, ['pr', 'view', String(number), '--json', 'headRefOid'])
   if (!r.ok) return undefined
   try {
     const v = JSON.parse(r.out) as { headRefOid?: unknown }
@@ -449,7 +501,7 @@ export async function prHead(run: Run, number: number): Promise<string | undefin
 export type Check = { name: string; bucket: string; state: string }
 
 export async function prChecks(run: Run, number: number): Promise<Check[] | { error: string }> {
-  const r = await gh(run.repo, ['pr', 'checks', String(number), '--json', 'name,state,bucket'])
+  const r = await ghOn(run, ['pr', 'checks', String(number), '--json', 'name,state,bucket'])
   if (!r.ok) {
     if (/no checks reported/i.test(r.err + r.out)) return []
     return { error: (r.err || r.out).slice(0, 500) }
@@ -467,19 +519,23 @@ export async function prChecks(run: Run, number: number): Promise<Check[] | { er
 // How many Actions workflows the repository defines; undefined when gh cannot
 // say. Zero is the one signal that no check will ever report.
 export async function workflowCount(run: Run): Promise<number | undefined> {
-  const r = await gh(run.repo, ['api', 'repos/{owner}/{repo}/actions/workflows', '--jq', '.total_count'])
+  const target = await ghRepo(run)
+  if ('error' in target) return undefined
+  const r = await gh(run.repo, ['api', '--hostname', target.host, `repos/${target.path}/actions/workflows`, '--jq', '.total_count'])
   return r.ok && /^\d+$/.test(r.out) ? Number(r.out) : undefined
 }
 
+// The failed log of the pushed head only: a branch's latest failed run may
+// belong to an older head whose failure this head already fixed.
 export async function failedLog(run: Run): Promise<string> {
-  const runs = await gh(run.repo, ['run', 'list', '--branch', run.branch, '--status', 'failure', '--limit', '1', '--json', 'databaseId'])
+  const runs = await ghOn(run, ['run', 'list', '--branch', run.branch, '--status', 'failure', '--limit', '20', '--json', 'databaseId,headSha'])
   let id: number | undefined
   try {
-    id = (JSON.parse(runs.out) as { databaseId?: number }[])[0]?.databaseId
+    id = (JSON.parse(runs.out) as { databaseId?: number; headSha?: string }[]).find(r => r.headSha === run.remoteHead)?.databaseId
   } catch {
     id = undefined
   }
   if (id === undefined) return ''
-  const log = await gh(run.repo, ['run', 'view', String(id), '--log-failed'])
+  const log = await ghOn(run, ['run', 'view', String(id), '--log-failed'])
   return log.out.slice(-6000)
 }

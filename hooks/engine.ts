@@ -1,8 +1,8 @@
 import type { Outcome, Run, StepName, StepState, Verdict } from '../types'
 import * as git from './git'
 import { io } from './io'
-import { fixPrompt } from './prompts'
-import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isClaimed, knownAgents, MAX_FIX_ROUNDS, newRun, PLUGIN, setStep, skipRest, statusText, timeoutFinding } from './run'
+import { fixPrompt, reaskPrompt, UNTRUSTED_NOTE, untrusted } from './prompts'
+import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, setStep, skipRest, statusText, timeoutFinding } from './run'
 import { AGENT_STEPS, commitMessage, FIXER, pollCi, spawn, STEP_DEFS } from './steps'
 import type { StepOutcome } from './steps'
 
@@ -81,7 +81,9 @@ export async function startRun(args: string): Promise<string> {
   await showStatus()
   await advance()
   const after = await io().readRun()
-  if (after?.id === id && after.outcome) return `no-mistakes run ${id} ${after.outcome}: ${after.note}`
+  // The note can quote the branch (a conflict names its commit subjects), and
+  // this text reaches the main session's model, so it goes in as data.
+  if (after?.id === id && after.outcome) return `no-mistakes run ${id} ${after.outcome}. ${UNTRUSTED_NOTE}\n${untrusted('run note', after.note ?? '')}`
   return `no-mistakes run ${id} started on ${facts.branch} (base ${facts.base}) in ${worktree.path}. The pane shows its progress.`
 }
 
@@ -95,14 +97,17 @@ function apply(run: Run, name: StepName, outcome: StepOutcome): Run {
 type From = (state: StepState) => boolean
 
 // One conditional write: the change lands only while the step is still in
-// the state the caller observed, and only once. Every transition goes here.
+// the state the caller observed, and only once. Every transition goes here,
+// so here an agent the step moves away from is retired.
 async function claim(name: StepName, from: From, change: (run: Run) => Run): Promise<Run | undefined> {
   let won = false
   const run = await io().writeRun(r => {
     won = false
     if (!r || r.outcome || currentStep(r) !== name || !from(r.steps[name])) return r
     won = true
-    return change(r)
+    const next = change(r)
+    const gone = agentOf(r.steps[name])
+    return gone !== undefined && gone !== agentOf(next.steps[name]) ? { ...next, retired: [...(next.retired ?? []), gone] } : next
   })
   return won && run ? run : undefined
 }
@@ -169,6 +174,7 @@ export async function onAgentAnswer(agentId: string, answer: string, reason: str
   const name = currentStep(run)
   if (!name) return
   const state = run.steps[name]
+  if (isRetired(run, agentId)) return
   if (agentOf(state) !== agentId) {
     if (isClaimed(state) && (await ownerOf(run, agentId)) !== 'not-ours') {
       if (early.size >= EARLY_MAX) early.delete(early.keys().next().value!)
@@ -183,8 +189,13 @@ export async function onAgentAnswer(agentId: string, answer: string, reason: str
   }
   let outcome: StepOutcome
   const committed = await git.commitAll(run, commitMessage(name, state))
+  // Only the steps whose agent is asked for a findings block are read this way;
+  // each of them (review, document, test, lint) fails closed in its check too.
+  const parsed = state.status === 'running' && !state.reasked && AGENT_STEPS.has(name) ? parseFindings(answer, name) : undefined
   if (committed.kind === 'error') {
     outcome = { step: { status: 'failed', reason: committed.isSetup ? `${name}: ${committed.detail}` : `${name}: the agent's edits could not be committed: ${committed.detail}` } }
+  } else if (parsed && 'error' in parsed) {
+    return reask(name, agentId, parsed.error)
   } else {
     try {
       outcome = state.status === 'fixing' ? { step: { status: 'pending' } } : await STEP_DEFS[name].check(run, answer)
@@ -193,6 +204,20 @@ export async function onAgentAnswer(agentId: string, answer: string, reason: str
     }
   }
   if ((await settle(name, outcome, mine)) === 'continue') await advance()
+}
+
+// An answer the mod cannot read gets one more chance: the same agent, which
+// still holds its work in context, is asked for the findings block alone.
+// Its next answer is checked as usual, and an unreadable one fails closed.
+async function reask(name: StepName, agentId: string, error: string): Promise<void> {
+  const mine: From = s => agentOf(s) === agentId
+  const asked = await claim(name, s => mine(s) && s.status === 'running' && !s.reasked, r => {
+    const s = r.steps[name]
+    return s.status === 'running' ? setStep(r, name, { ...s, reasked: true }) : r
+  })
+  if (!asked) return
+  const sent = await io().send(agentId, reaskPrompt(error)).catch((e: unknown) => ({ isDelivered: false as const, reason: String(e) }))
+  if (!sent.isDelivered) await settle(name, { step: { status: 'failed', reason: `${name} answer is unreadable (${error}) and the agent could not be asked again (${sent.reason}); fail closed` } }, mine)
 }
 
 export async function toggle(id: string): Promise<void> {
@@ -265,8 +290,21 @@ async function tick(): Promise<void> {
   const now = await io().now()
   if (isAgentDriven(state) && now - state.startedAt > AGENT_TIMEOUT_MS) {
     const { agentId } = state
+    // The step is taken from the agent before it is stopped: the stop ends its
+    // turn as aborted, and that answer must find the step no longer its own.
+    const taken = await claim(name, s => agentOf(s) === agentId, r => setStep(r, name, { status: 'starting', startedAt: now }))
+    if (!taken) return
     await stopAgent(agentId)
-    await settle(name, { step: { status: 'parked', findings: [timeoutFinding(name)] } }, s => agentOf(s) === agentId)
+    let step: StepState
+    if ((await stillRunning(taken)).includes(agentId)) {
+      step = { status: 'failed', reason: `the ${name} agent ran 30 minutes without answering and could not be stopped; it may still write to the worktree, so the run stops here` }
+    } else {
+      // What the agent changed is its step's, as if it had answered; left in
+      // the tree it would land in a later step's commit, or be put back by prepare.
+      const committed = await git.commitAll(taken, commitMessage(name, state))
+      step = committed.kind === 'error' ? { status: 'failed', reason: committed.isSetup ? `${name}: ${committed.detail}` : `${name}: the timed-out agent's edits could not be committed: ${committed.detail}` } : { status: 'parked', findings: [timeoutFinding(name)] }
+    }
+    await settle(name, { step }, isClaimed)
     return
   }
   // A claim whose owner never settled it (the actor died mid-effect).
