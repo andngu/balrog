@@ -4,6 +4,33 @@ A Claude Code mod port of [kunchenguid/no-mistakes](https://github.com/kunchengu
 
 `/no-mistakes [intent]` gates the current feature branch: rebase onto `origin/<default>`, adversarial review, test, document, lint, push with a lease, PR, CI watch. Every step runs in a disposable detached worktree under `~/.cache/no-mistakes/` (mode 0700), never in your checkout. Blocking findings park the run in a pane where you fix, approve, skip or abort.
 
+## Install
+
+You need:
+
+- Claude Code with mod support.
+- git 2.40 or newer, for the attribute reads described under [Who runs what](#who-runs-what).
+- `gh`, logged in (`gh auth status`), for the PR and CI steps.
+
+Add this repository as a marketplace, then install the mod from it:
+
+```sh
+claude plugin marketplace add andngu/no-mistakes
+claude plugin install no-mistakes@no-mistakes
+```
+
+To install from a local clone, give its path to `marketplace add` instead of `andngu/no-mistakes`.
+
+The install enables the mod. Check with `claude plugin list`; the entry reads `Status: enabled`. If it reads `disabled`, run `claude plugin enable no-mistakes@no-mistakes`. Restart Claude Code to load the mod.
+
+## Quick start
+
+1. Check out a feature branch and commit your work.
+2. Put a `.no-mistakes.yaml` on the default branch. See [Configuration](#configuration). The mod reads it from `origin/<default>` only.
+3. Run `/no-mistakes <intent>`, where the intent says what the branch is for.
+4. Watch the pane. When a step parks, act on its findings as described under [The pane](#the-pane).
+5. Run `/no-mistakes-status` to reopen the pane. It also prints the state of the last run.
+
 ## The pane
 
 The pane is a board of the eight steps, one row each. A row holds a glyph and the step's latest fact: the command it runs, how long it has run against its 30-minute limit, the findings it parked on, the reason it was skipped or failed, or the PR as a link. A step past 25 minutes turns to the warning colour and says when it times out. The board redraws on every state change, and every 30 seconds while a step runs.
@@ -49,3 +76,16 @@ What the mod runs on your behalf is not held to your permission rules or sandbox
 - A failing test or lint command goes to the fixer once with the output; the mod commits the fixer's edits and re-runs the command, and a command that still fails parks the step. The fixer's commits are not reviewed again by the reviewer.
 
 Known limitations: hooks are off for every git call, so a `pre-push` hook such as git-lfs's does not run, and LFS objects of the branch are not uploaded by the push. Run `git lfs push origin <branch>` yourself where the repository uses LFS. A tool output too large for the transcript may be saved by the engine outside the worktree, where the agents cannot read it.
+
+## Development
+
+Run the tests from the repository root:
+
+```sh
+claude plugin test .
+```
+
+- `hooks/`: the mod. `register.tsx` binds the commands and guards; `engine.ts`, `steps.ts`, `git.ts`, `guard.ts`, `prompts.ts`, `pane.tsx` and `run.ts` hold the run.
+- `types/`: `index.d.ts`, the types of a run, a step, a finding and the configured commands.
+- `tests/`: `pipeline.test.ts`, the tests, run against a mocked world.
+- `scripts/realgit/`: checks that drive `git.ts` and `guard.ts` against real git repositories. Run `bun scripts/realgit/realgit.ts`.

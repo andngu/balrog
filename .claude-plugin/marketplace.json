@@ -1,0 +1,6 @@
+{
+  "name": "no-mistakes",
+  "description": "A Claude Code mod that gates a feature branch before it ships.",
+  "owner": { "name": "andngu" },
+  "plugins": [{ "name": "no-mistakes", "source": "./" }]
+}
