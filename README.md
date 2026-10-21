@@ -103,3 +103,5 @@ claude plugin test .
 - `types/`: `index.d.ts`, the types of a run, a step, a finding and the configured commands.
 - `tests/`: `pipeline.test.ts`, the tests, run against a mocked world.
 - `scripts/realgit/`: checks that drive `git.ts` and `guard.ts` against real git repositories. Run `bun scripts/realgit/realgit.ts`.
+
+To gate a branch with its own mod, run `scripts/dogfood.sh start <branch> [intent]` on a pushed branch. It clones the branch from `origin` into `~/.cache/no-mistakes-dogfood/<branch>`, hosts Claude Code there in tmux with that clone loaded as the plugin, and runs `/no-mistakes`. The hosted session runs the branch's mod and spends your own Claude quota. The pipeline pushes its commits to the branch, so pull afterwards. `send`, `key`, `focus`, `show`, `status` and `stop` drive the session.
