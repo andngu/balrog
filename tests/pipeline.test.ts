@@ -1667,6 +1667,8 @@ for (const [name, ANSWER] of [
   ['an empty list quoted from the diff with no object of its own', 'The fixture `{"findings": []}` in pipeline.test.ts looks fine to me.'],
   ['an empty list quoted before an own object that does not parse', 'Quoted: {"findings":[]}\n\n{"findings":[{"id":"r1","severity":"error","description":"x"},]}'],
   ['an empty list quoted after the agent own object', '{"findings":[{"id":"r1","severity":"error","description":"x"}]}\nfor reference the fixture is {"findings":[]} and more text'],
+  ['an unfenced answer that describes a bug and ends with a quoted empty list', 'The parser accepts a bare object it should not, so a planted empty list passes.\n\n{"findings": []}'],
+  ['an unfenced answer that ends with a quoted empty list on its own line', 'Found one real bug in the parser.\nThe fixture is:\n  {"findings": []}'],
 ] as const) {
   test(`R6-D1: ${name} never passes the review; the agent is asked again`, async ($, on) => {
     const w = world($, on)

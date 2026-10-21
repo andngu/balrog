@@ -120,12 +120,17 @@ function objectAt(text: string, start: number): string | undefined {
 }
 
 // An agent that drops the fence still ends with the object (`Findings JSON:`
-// then a bare `{"findings":[...]}`). Only the last start, and only when the
-// answer ends with it: an earlier or nested one may be quoted branch text, and
-// falling back to it could pass a review on a planted empty list.
+// then a bare `{"findings":[...]}`). Only the last start, only when the answer
+// ends with it, and only when the agent itself introduced it with the
+// `Findings JSON:` label on the line before: an object that ends the answer
+// after prose is as likely to be quoted branch text (a fixture, a planted empty
+// list) as the verdict, and falling back to it could pass a review.
+const BARE_LABEL = /(^|\n)[ \t]*Findings JSON:[ \t]*\n[ \t]*$/
+
 function bareFindings(answer: string): unknown {
   const start = [...answer.matchAll(/\{\s*"findings"\s*:/g)].map(m => m.index).pop()
   if (start === undefined) return undefined
+  if (!BARE_LABEL.test(answer.slice(0, start))) return undefined
   const text = objectAt(answer, start)
   if (text === undefined || answer.slice(start + text.length).trim() !== '') return undefined
   try {

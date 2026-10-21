@@ -189,7 +189,9 @@ export async function onAgentAnswer(agentId: string, answer: string, reason: str
   }
   let outcome: StepOutcome
   const committed = await git.commitAll(run, commitMessage(name, state))
-  const parsed = state.status === 'running' && !state.reasked ? parseFindings(answer, name) : undefined
+  // Only the steps whose agent is asked for a findings block are read this way;
+  // each of them (review, document, test, lint) fails closed in its check too.
+  const parsed = state.status === 'running' && !state.reasked && AGENT_STEPS.has(name) ? parseFindings(answer, name) : undefined
   if (committed.kind === 'error') {
     outcome = { step: { status: 'failed', reason: committed.isSetup ? `${name}: ${committed.detail}` : `${name}: the agent's edits could not be committed: ${committed.detail}` } }
   } else if (parsed && 'error' in parsed) {
