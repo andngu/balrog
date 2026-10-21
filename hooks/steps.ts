@@ -2,7 +2,7 @@ import type { Decision, Finding, Run, StepName, StepState } from '../types'
 import * as git from './git'
 import { io } from './io'
 import { ciFixPrompt, commandPrompt, documentPrompt, FIXER_SYSTEM, prBodyPrompt, reviewPrompt, REVIEWER_SYSTEM } from './prompts'
-import { CI_GRACE_MS, CI_QUIET_MS, CI_TIMEOUT_MS, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN, slug } from './run'
+import { CI_GRACE_MS, CI_QUIET_MS, CI_TIMEOUT_MS, commitLines, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN, slug } from './run'
 
 export const REVIEWER = `${PLUGIN}:reviewer`
 export const FIXER = `${PLUGIN}:fixer`
@@ -168,7 +168,7 @@ const push: StepDef = {
     const commits = await git.pipelineCommits(run)
     const r = await git.push(run)
     if (!r.ok) return { ...failed(`push refused (lease on ${run.remoteHead || 'a new branch'}): ${r.reason}`), patch: { ...patch, commits } }
-    const count = commits.split('\n').filter(line => /^[0-9a-f]{7,} /.test(line)).length
+    const count = commitLines(commits).length
     return { step: { status: 'passed', note: `pushed ${r.head.slice(0, 12)} to origin/${run.branch} with ${count} pipeline commit(s)`, findings: [] }, patch: { ...patch, commits, head: r.head, remoteHead: r.head } }
   },
   check: notAgentDriven('push'),

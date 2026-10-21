@@ -46,6 +46,7 @@ type World = {
   listThrows: boolean
   lists: number
   notifies: number
+  invalidates: number
   stops: string[]
   stopFails: boolean
   status: Record<string, 'running' | 'completed' | 'killed'>
@@ -62,7 +63,7 @@ type World = {
   sendFails: boolean
   stopAborts: boolean
   writeFails: 'deny' | 'error' | 'throw' | undefined
-  pane: (surface: RenderSurface) => Promise<string>
+  pane: (surface: RenderSurface, props?: Partial<typeof PANE_PROPS>) => Promise<string>
 }
 
 type Options = { dangling?: string[]; branch?: string; gh?: boolean; config?: string; branchConfig?: string; realPaths?: Record<string, string>; missing?: string[]; instantReview?: string; foreignReview?: true; origin?: string }
@@ -86,6 +87,7 @@ function world($: Engine, on: On, options: Options = {}): World {
     listThrows: false,
     lists: 0,
     notifies: 0,
+    invalidates: 0,
     stops: [],
     stopFails: false,
     status: {},
@@ -102,8 +104,8 @@ function world($: Engine, on: On, options: Options = {}): World {
     sendFails: false,
     stopAborts: false,
     writeFails: undefined,
-    pane: async surface => {
-      const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+    pane: async (surface, props) => {
+      const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PLUGIN, props: { ...PANE_PROPS, ...props } })
       const texts = (await ui.findAll({ type: 'Text' })).map(found => found.text)
       const buttons = (await ui.findAll({ type: 'Button' })).map(found => `${found.key ?? ''}=${found.text}`)
       await ui.unmount()
@@ -164,6 +166,10 @@ function world($: Engine, on: On, options: Options = {}): World {
   on('ui.notify', () => {
     w.notifies++
     return { value: { isSent: true, channel: 'terminal_bell' } }
+  })
+  on('ui.invalidate', () => {
+    w.invalidates++
+    return { value: undefined }
   })
   on('fs.exists', () => ({ value: options.branchConfig !== undefined }))
   on('fs.read', (_$, e) => ({ value: e.path.endsWith('/.git') ? w.gitFile : options.branchConfig ?? '' }))
@@ -315,8 +321,8 @@ test('rebases in a detached worktree, then parks review on an error finding and 
   for (const surface of SURFACES) {
     const drawn = await w.pane(surface)
     expect(drawn).toContain('Parked at review')
-    expect(drawn).toContain('[!] review')
-    expect(drawn).toMatch(/toggle:r1=\[x\] r1 .*error.*a\.ts:3 off by one/)
+    expect(drawn).toContain('! review')
+    expect(drawn).toMatch(/toggle:r1=\[x\] error +fixable a\.ts:3 off by one/)
     expect(drawn).toContain('fix=Fix selected')
     expect(drawn).toContain('abort=Abort')
   }
@@ -341,10 +347,12 @@ test('malformed reviewer json, asked for once more and still malformed, fails cl
   expect(run.steps.review).toMatchObject({ status: 'failed' })
   expect(run.outcome).toBe('failed')
   expect(run.note).toContain('unreadable')
-  expect(run.note).toContain(`git worktree remove ${run.worktree}`)
-  expect(run.note).not.toContain('--force')
+  expect(run.followUps).toEqual([{ text: 'The worktree is kept for inspection; remove it with', command: `git worktree remove ${run.worktree}` }])
   expect(w.calls.some(c => c.startsWith('git worktree remove'))).toBe(false)
-  expect(await w.pane('terminal')).toContain('Run failed')
+  const lines = (await w.pane('terminal')).split('\n')
+  expect(lines.some(line => line.startsWith('✗ review '))).toBe(true)
+  expect(lines).toContain('Run failed at review')
+  expect(lines).toContain(`git worktree remove ${run.worktree}`)
 })
 
 test('Approve records a decision, runs the test command itself, and starts the document fixer in the worktree', async ($, on) => {
@@ -372,7 +380,7 @@ test('Fix selected sends only the toggled findings, commits the fix, then re-run
   ]))
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
   await ui.press({ key: 'toggle:r2' })
-  expect((await ui.find({ key: 'toggle:r2' }))?.text).toContain('[ ] r2')
+  expect((await ui.find({ key: 'toggle:r2' }))?.text).toContain('[ ] warning')
   await ui.press({ key: 'fix' })
   await ui.unmount()
   let run = lastRun(w)
@@ -392,6 +400,20 @@ test('Fix selected sends only the toggled findings, commits the fix, then re-run
   expect(w.spawns[2]!.prompt).toContain('the human chose to fix for findings r1')
 })
 
+test('Fix selected starts without the findings that do not block', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', answer([
+    { id: 'r1', severity: 'error', action: 'auto-fix', description: 'off by one' },
+    { id: 'r2', severity: 'info', action: 'no-op', description: 'comment style' },
+  ]))
+  const drawn = await w.pane('terminal')
+  expect(drawn).toContain('toggle:r2=[ ] info')
+  expect(drawn).toContain('fix=Fix selected (1)')
+  await pressOnce($, 'fix')
+  expect(lastRun(w).decisions).toEqual([{ step: 'review', findingIds: ['r1'], verdict: 'fix' }])
+})
+
 test('Skip and Abort are recorded; Abort removes the worktree', async ($, on) => {
   const w = world($, on)
   await start($)
@@ -409,6 +431,9 @@ test('Skip and Abort are recorded; Abort removes the worktree', async ($, on) =>
   expect(run.outcome).toBe('aborted')
   expect(run.decisions).toEqual([{ step: 'review', findingIds: ['r1'], verdict: 'skip' }])
   expect(w.calls).toContain(`git worktree remove --force ${run.worktree}`)
+  const lines = (await w.pane('terminal')).split('\n')
+  expect(lines).toContain('Run aborted at document')
+  expect(lines).toContain('! document 1 finding, 1 blocking')
 })
 
 test('a clean run pushes with a lease on the observed remote head, skips pr without gh, and removes the worktree', async ($, on) => {
@@ -427,7 +452,11 @@ test('a clean run pushes with a lease on the observed remote head, skips pr with
   expect(run.steps.pr).toMatchObject({ status: 'skipped', reason: 'gh is missing or not authenticated' })
   expect(run.steps.ci).toMatchObject({ status: 'skipped', reason: 'no pull request to watch' })
   expect(run.outcome).toBe('passed')
-  expect(run.note).toContain('git pull')
+  expect(run.followUps).toEqual([{ text: 'origin/feat has commits your local branch lacks; update it with', command: 'git pull --ff-only' }])
+  const lines = (await w.pane('terminal')).split('\n')
+  expect(lines).toContain('Run passed')
+  expect(lines).toContain('git pull --ff-only')
+  expect(lines.some(line => line.startsWith('abort='))).toBe(false)
   expect(w.calls).toContain(`git worktree remove --force ${run.worktree}`)
   expect(w.spawns.map(s => s.description.replace(` (${run.id}/0)`, ''))).toEqual(['no-mistakes review', 'no-mistakes document'])
 })
@@ -440,6 +469,7 @@ test('no diff after the rebase skips every later step', async ($, on) => {
   expect(run.steps.review).toMatchObject({ status: 'skipped', reason: 'no diff against origin/main' })
   expect(run.outcome).toBe('passed')
   expect(w.spawns).toHaveLength(0)
+  expect((await w.pane('terminal')).split('no diff against origin/main')).toHaveLength(2)
 })
 
 test('a rebase conflict aborts the rebase and fails the run', async ($, on) => {
@@ -504,6 +534,136 @@ test('ci parks after 30 minutes of pending checks', async ($, on) => {
   expect(await w.pane('terminal')).toContain('Parked at ci')
 })
 
+test('the pane is redrawn on every tick while a step runs, and not once the run has ended', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  const before = w.invalidates
+  await w.clock.advance(30_000)
+  expect(w.invalidates).toBe(before + 1)
+  await pressOnce($, 'abort')
+  expect(lastRun(w).outcome).toBe('aborted')
+  const after = w.invalidates
+  await w.clock.advance(60_000)
+  expect(w.invalidates).toBe(after)
+})
+
+// The colour of the row whose text holds `text`, as the pane draws it now.
+const rowColour = async ($: Engine, text: string): Promise<unknown> => {
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  const row = (await ui.findAll({ type: 'Text' })).find(found => found.text?.includes(text))
+  await ui.unmount()
+  return row?.props.color
+}
+
+test('a running step shows its clock, and warns before the 30 minute timeout', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await w.clock.advance(12 * 60_000)
+  expect(await w.pane('terminal')).toContain('reviewer working · 12m of 30m')
+  expect(await rowColour($, 'reviewer working · 12m')).toBe('claude')
+  await w.clock.advance(15 * 60_000)
+  expect(await w.pane('terminal')).toContain('reviewer working · 27m of 30m, times out in 3m')
+  expect(await rowColour($, 'reviewer working · 27m')).toBe('warning')
+})
+
+test('a failed step shows its first line and the last four lines of a longer reason', async ($, on) => {
+  const w = world($, on)
+  const conflicts = [1, 2, 3, 4, 5, 6].map(n => `CONFLICT ${n}: file${n}.ts`)
+  w.rules.push(line => (line === REBASE ? { exitCode: 1, stderr: conflicts.join('\n') } : undefined))
+  await start($)
+  expect(lastRun(w).steps.rebase).toMatchObject({ status: 'failed' })
+  const drawn = (await w.pane('terminal')).split('\n')
+  expect(drawn).toContain('…')
+  for (const line of conflicts.slice(2)) expect(drawn).toContain(line)
+  for (const line of conflicts.slice(0, 2)) expect(drawn).not.toContain(line)
+})
+
+test('a parked step keeps its findings once the run ends', async ($, on) => {
+  const w = world($, on)
+  await parkReview($, w)
+  await pressOnce($, 'abort')
+  expect(lastRun(w).outcome).toBe('aborted')
+  const lines = (await w.pane('terminal')).split('\n')
+  expect(lines).toContain('Run aborted at review')
+  expect(lines).toContain('! review   1 finding, 1 blocking')
+})
+
+test('a step still running when the run ends reads stopped', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await pressOnce($, 'abort')
+  expect(lastRun(w).outcome).toBe('aborted')
+  expect((await w.pane('terminal')).split('\n')).toContain('- review   stopped')
+})
+
+test('a running run draws its header, its steps and Abort alone; a parked one adds the call', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  let lines = (await w.pane('terminal')).split('\n')
+  expect(lines).toContain('feat → main')
+  expect(lines).toContain('add x')
+  expect(lines).toContain(lastRun(w).worktree)
+  expect(lines).toContain('✓ rebase   rebased onto origin/main')
+  expect(lines).toContain('▸ review   reviewer working · <1m of 30m')
+  expect(lines).toContain('abort=Abort')
+  expect(lines.some(line => line.startsWith('fix='))).toBe(false)
+
+  await complete($, 'agent-1', answer([
+    { id: 'r1', severity: 'error', action: 'auto-fix', file: 'a.ts', line: 3, description: 'off by one' },
+    { id: 'r2', severity: 'warning', action: 'ask-user', description: 'is a 5s max delay right?' },
+    { id: 'r3', severity: 'info', action: 'no-op', description: 'retry count is a literal' },
+  ]))
+  lines = (await w.pane('terminal')).split('\n')
+  expect(lines).toContain('! review   3 findings, 2 blocking')
+  expect(lines).toContain('Parked at review · 3 of 3 fix rounds left')
+  expect(lines).toContain('toggle:r1=[x] error   fixable a.ts:3 off by one')
+  expect(lines).toContain('toggle:r2=[x] warning your call is a 5s max delay right?')
+  expect(lines).toContain('toggle:r3=[ ] info    no action retry count is a literal')
+  expect(lines).toEqual(expect.arrayContaining(['fix=Fix selected (2)', 'approve=Approve', 'skip=Skip step', 'abort=Abort']))
+})
+
+test('Fix selected counts the findings it sends before the press, and the findings carry hotkeys', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', answer([
+    { id: 'r1', severity: 'error', action: 'auto-fix', description: 'off by one' },
+    { id: 'r2', severity: 'warning', action: 'ask-user', description: 'naming' },
+  ]))
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  expect((await ui.find({ key: 'fix' }))?.text).toBe('Fix selected (2)')
+  expect((await ui.find({ key: 'toggle:r1' }))?.props.hotkey).toBe('1')
+  expect((await ui.find({ key: 'toggle:r2' }))?.props.hotkey).toBe('2')
+  await ui.press({ key: 'toggle:r2' })
+  expect((await ui.find({ key: 'fix' }))?.text).toBe('Fix selected (1)')
+  await ui.press({ key: 'toggle:r1' })
+  const fix = await ui.find({ key: 'fix' })
+  expect(fix?.text).toBe('Fix selected (0)')
+  expect(fix?.props.dimColor).toBe(true)
+  await ui.unmount()
+})
+
+test('the pane counts the fix rounds left, and says so on Fix once none is', async ($, on) => {
+  const w = world($, on)
+  await parkReview($, w)
+  for (let round = 1; round <= 3; round++) {
+    await pressOnce($, 'fix')
+    await complete($, `agent-${2 * round}`, 'Fixed.')
+    await complete($, `agent-${2 * round + 1}`, answer([{ id: 'r1', severity: 'error', action: 'auto-fix', description: 'bug' }]))
+    if (round === 1) expect(await w.pane('terminal')).toContain('Parked at review · 2 of 3 fix rounds left')
+  }
+  const drawn = await w.pane('terminal')
+  expect(drawn).toContain('Parked at review · no fix rounds left')
+  expect(drawn).toContain('fix=Fix selected (no rounds left)')
+})
+
+test('the hint about focus shows on an unfocused terminal and nowhere else', async ($, on) => {
+  const w = world($, on)
+  await parkReview($, w)
+  expect(await w.pane('terminal')).toContain('Keys work after ctrl+x tab focuses the pane.')
+  expect(await w.pane('terminal', { isFocused: true })).not.toContain('ctrl+x tab')
+  expect(await w.pane('desktop')).not.toContain('ctrl+x tab')
+})
+
 test('/no-mistakes-status reopens the pane and reports the run', async ($, on) => {
   const w = world($, on)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
@@ -538,12 +698,13 @@ test('defect 1: refuses the run when origin/<branch> has commits the local branc
   const w = world($, on)
   w.pushed = REMOTE
   w.rules.push(line => (line === `git merge-base --is-ancestor ${REMOTE} HEAD` ? { exitCode: 1 } : undefined))
-  await start($)
+  const text = await start($)
   const run = lastRun(w)
   expect(run.steps.rebase).toMatchObject({ status: 'failed' })
   expect(run.outcome).toBe('failed')
   expect(run.note).toContain('origin/feat has commits')
   expect(run.note).toContain('git pull')
+  expect(text).toContain(`remove it with git worktree remove ${run.worktree}`)
   expect(w.spawns).toHaveLength(0)
   expect(w.calls.some(c => c.startsWith('git push'))).toBe(false)
 })
@@ -575,8 +736,7 @@ test('defect 2: abort after a fixer commit pins the worktree head under a recove
   const remove = w.calls.indexOf(`git worktree remove --force ${run.worktree}`)
   expect(pin).toBeGreaterThan(-1)
   expect(remove).toBeGreaterThan(pin)
-  expect(run.note).toContain(`refs/no-mistakes/recover/${run.id}`)
-  expect(run.note).toContain('git branch')
+  expect(run.followUps?.map(f => f.command)).toContain(`git branch feat-recovered refs/no-mistakes/recover/${run.id}`)
   await complete($, 'agent-2', 'Fixed and committed.')
   expect(lastRun(w).outcome).toBe('aborted')
   expect(w.spawns).toHaveLength(2)
@@ -974,7 +1134,7 @@ test('item 5: a recovery ref is pinned only for commits beyond the rebased head,
   await pressOnce($, 'abort')
   const run = lastRun(w)
   expect(w.calls).toContain(`git update-ref refs/no-mistakes/recover/${run.id} ${FIXED}`)
-  expect(run.note).toContain(`git update-ref -d refs/no-mistakes/recover/${run.id}`)
+  expect(run.followUps?.map(f => f.command)).toContain(`git update-ref -d refs/no-mistakes/recover/${run.id}`)
 })
 
 test('item 5: a passed run pins nothing because the worktree head is the pushed head', async ($, on) => {
@@ -1039,8 +1199,9 @@ test('item 6: a worktree is kept, and the note says so, while a run agent could 
   expect(run.outcome).toBe('aborted')
   expect(w.stops).toContain('agent-2')
   expect(w.calls.some(c => c.startsWith('git worktree remove'))).toBe(false)
-  expect(run.note).toContain('could not be stopped')
-  expect(run.note).toContain(`git worktree remove --force ${run.worktree}`)
+  expect(run.followUps).toEqual([
+    { text: `The worktree ${run.worktree} is kept because 1 pipeline agent(s) could not be stopped and may still write to it; once they end, remove it with`, command: `git worktree remove --force ${run.worktree}` },
+  ])
 })
 
 // Round 3: the mod owns every git call; agents get no git and no general shell.
@@ -1139,7 +1300,7 @@ test('A: uncommitted edits are committed as wip and pinned before the worktree g
   expect(commit).toBeGreaterThan(-1)
   expect(pin).toBeGreaterThan(commit)
   expect(remove).toBeGreaterThan(pin)
-  expect(run.note).toContain(`refs/no-mistakes/recover/${run.id}`)
+  expect(run.followUps?.map(f => f.command)).toContain(`git branch feat-recovered refs/no-mistakes/recover/${run.id}`)
 })
 
 test('B: the reviewer has Read, Grep and Glob only and the fixer no git tool, both under dontAsk', async ($, on) => {
@@ -1531,7 +1692,12 @@ test('R4-11: the mod commits are listed in the pane and appended to the PR body'
   const run = lastRun(w)
   expect(run.steps.push).toMatchObject({ status: 'passed', note: expect.stringContaining('with 1 pipeline commit(s)') })
   expect(run.commits).toBe(LOG)
-  expect(await w.pane('terminal')).toContain('fix(no-mistakes/test): make the test check pass')
+  const drawn = await w.pane('terminal')
+  expect(drawn).toContain('cccc333 fix(no-mistakes/test): make the test check pass')
+  expect(drawn).not.toContain('file changed')
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  expect((await ui.find({ type: 'Link' }))?.props.href).toBe('https://github.com/o/r/pull/7')
+  await ui.unmount()
   const body = Object.entries(w.stdins).find(([line]) => line.startsWith('gh pr create'))?.[1] ?? ''
   expect(body).toContain('PR body')
   expect(body).toContain('## Commits no-mistakes added')
@@ -1737,6 +1903,19 @@ for (const [origin, repo] of ORIGINS) {
     for (const c of ghs) expect(c.endsWith(` --repo ${repo}`)).toBe(true)
   })
 }
+
+test('a pr create that prints no URL fails the step, and nothing gh printed becomes a link', async ($, on) => {
+  const w = world($, on, { gh: true })
+  w.rules.push(line => (line.startsWith('gh pr create') ? { stdout: 'created the pull request' } : undefined))
+  await start($)
+  await passTwo($)
+  const run = lastRun(w)
+  expect(run.steps.pr).toMatchObject({ status: 'failed', reason: expect.stringContaining('printed no pull request URL') })
+  expect(run.prUrl).toBeUndefined()
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+  await ui.unmount()
+})
 
 test('R6-8: the workflow count is read from origin\'s repository on its host', async ($, on) => {
   const w = world($, on, { gh: true, origin: 'ssh://git@ghe.example.com:2222/team/svc.git' })

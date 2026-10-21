@@ -483,8 +483,14 @@ export async function prView(run: Run): Promise<PrRef | undefined> {
 export async function prCreate(run: Run, title: string, body: string): Promise<PrRef | { error: string }> {
   const r = await ghOn(run, ['pr', 'create', '--base', run.base, '--head', run.branch, '--title', title, '--body-file', '-'], body)
   if (!r.ok) return { error: (r.err || r.out).slice(0, 1000) }
-  const url = r.out.split('\n').find(line => line.startsWith('https://')) ?? r.out
-  return (await prView(run)) ?? { url, number: Number(url.split('/').pop()) || 0 }
+  // gh prints the new PR's URL on its own line. Without one, the URL is not
+  // trusted: the pane renders the PR as a link, so only an https URL may stand.
+  // A PR the view finds is taken as gh reports its URL, without that check.
+  const url = r.out.split('\n').find(line => line.startsWith('https://'))
+  const view = await prView(run)
+  if (view) return view
+  if (url === undefined) return { error: `gh pr create printed no pull request URL: ${r.out.slice(0, 200)}` }
+  return { url, number: Number(url.split('/').pop()) || 0 }
 }
 
 export async function prHead(run: Run, number: number): Promise<string | undefined> {

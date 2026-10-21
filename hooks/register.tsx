@@ -54,6 +54,7 @@ export const register: Register = on => {
       status: text => $.ui.status(text),
       toast: text => $.ui.toast(text),
       notify: text => $.ui.notify(text),
+      invalidate: () => $.ui.invalidate('ui.render'),
       readRun: () => read($, runAtom),
       writeRun: change => update($, runAtom, change),
       readSelected: () => read($, selectedAtom),

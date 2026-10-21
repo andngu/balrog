@@ -38,6 +38,8 @@ export type CommandName = 'prepare' | 'test' | 'lint' | 'format'
 
 export type Commands = Partial<Record<CommandName, string>>
 
+export type FollowUp = { text: string; command?: string }
+
 export type Run = {
   id: string
   repo: string
@@ -74,6 +76,7 @@ export type Run = {
   abortRequested?: true
   outcome?: Outcome
   note?: string
+  followUps?: FollowUp[]
 }
 
 declare module 'claude-code' {
