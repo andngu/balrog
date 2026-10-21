@@ -1,8 +1,9 @@
 import { atom, read } from 'claude-code'
 import type { Color, On } from 'claude-code'
 
-import type { Finding, FollowUp, Run, StepName, StepState } from '../types'
+import type { Finding, FollowUp, Run, StepName, StepState, Verdict } from '../types'
 import { press, toggle } from './engine'
+import { io } from './io'
 import { AGENT_TIMEOUT_MS, commitLines, currentStep, fixRounds, isBlocking, MAX_FIX_ROUNDS, PANE, STEP_ORDER } from './run'
 
 type Status = StepState['status']
@@ -132,6 +133,11 @@ function board(run: Run, selected: string[], now: number): Board {
   }
 }
 
+const pressAndToast = (verdict: Verdict | 'abort') => () =>
+  void press(verdict).then(pressed => {
+    if (pressed.kind !== 'done') io().toast(pressed.kind === 'refused' ? pressed.reason : pressed.text)
+  })
+
 const runAtom = atom({ plugin: 'no-mistakes', key: 'run' } as const, null)
 const selectedAtom = atom({ plugin: 'no-mistakes', key: 'selected' } as const, [])
 
@@ -209,12 +215,12 @@ export function registerPane(on: On): void {
             <Box gap={2} flexWrap="wrap">
               {call && (
                 <>
-                  <Button key="fix" plain hotkey="f" variant="primary" dimColor={call.selected === 0 || call.roundsLeft === 0} label={call.roundsLeft === 0 ? 'Fix selected (no rounds left)' : `Fix selected (${call.selected})`} onPress={() => void press('fix')} />
-                  <Button key="approve" plain hotkey="a" label="Approve" onPress={() => void press('approve')} />
-                  <Button key="skip" plain hotkey="s" label="Skip step" onPress={() => void press('skip')} />
+                  <Button key="fix" plain hotkey="f" variant="primary" dimColor={call.selected === 0 || call.roundsLeft === 0} label={call.roundsLeft === 0 ? 'Fix selected (no rounds left)' : `Fix selected (${call.selected})`} onPress={pressAndToast('fix')} />
+                  <Button key="approve" plain hotkey="a" label="Approve" onPress={pressAndToast('approve')} />
+                  <Button key="skip" plain hotkey="s" label="Skip step" onPress={pressAndToast('skip')} />
                 </>
               )}
-              <Button key="abort" plain hotkey="x" label="Abort" onPress={() => void press('abort')} />
+              <Button key="abort" plain hotkey="x" label="Abort" onPress={pressAndToast('abort')} />
             </Box>
             {showHint && <Text dimColor>Keys work after ctrl+x tab focuses the pane.</Text>}
           </Box>

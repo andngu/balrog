@@ -1,4 +1,4 @@
-import type { FollowUp, Outcome, Run, StepName, StepState, Verdict } from '../types'
+import type { Finding, FollowUp, Outcome, Run, StepName, StepState, Verdict } from '../types'
 import * as git from './git'
 import { io } from './io'
 import { fixPrompt, reaskPrompt, UNTRUSTED_NOTE, untrusted } from './prompts'
@@ -41,7 +41,7 @@ export async function startRun(args: string): Promise<string> {
   const active = await io().readRun()
   if (active && !active.outcome) {
     await io().openPane()
-    return `A run is already active on ${active.branch} (${statusText(active)}). Finish or abort it from the pane first.`
+    return `A run is already active on ${active.branch} (${statusText(active)}). Finish it, or abort it with /no-mistakes-abort, first.`
   }
   if (active) {
     const live = await stillRunning(active)
@@ -73,7 +73,7 @@ export async function startRun(args: string): Promise<string> {
   if (seeded?.id !== id) {
     await git.removeWorktree(run)
     await io().openPane()
-    return `A run is already active${seeded ? ` on ${seeded.branch} (${statusText(seeded)})` : ''}. Finish or abort it from the pane first.`
+    return `A run is already active${seeded ? ` on ${seeded.branch} (${statusText(seeded)})` : ''}. Finish it, or abort it with /no-mistakes-abort, first.`
   }
   knownAgents.clear()
   await io().writeSelected(() => [])
@@ -85,6 +85,31 @@ export async function startRun(args: string): Promise<string> {
   // this text reaches the main session's model, so it goes in as data.
   if (after?.id === id && after.outcome) return `no-mistakes run ${id} ${after.outcome}. ${UNTRUSTED_NOTE}\n${untrusted('run note', report(after))}`
   return `no-mistakes run ${id} started on ${facts.branch} (base ${facts.base}) in ${worktree.path}. The pane shows its progress.`
+}
+
+const where = (f: Finding) => (f.file === undefined ? '' : ` ${f.file}${f.line === undefined ? '' : `:${f.line}`}`)
+
+// What an agent or the branch wrote reaches the main session's model as data.
+export async function statusReport(): Promise<string> {
+  const run = await io().readRun()
+  if (!run) return 'No run yet. Start one with /no-mistakes [intent].'
+  const head = `${statusText(run)} (${run.branch}, worktree ${run.worktree})`
+  const name = currentStep(run)
+  if (run.outcome) {
+    const lines = [run.note ?? '', ...(run.followUps ?? []).map(f => (f.command === undefined ? f.text : `${f.text}\n  ${f.command}`))].filter(line => line !== '')
+    return `${head}\nRun ${run.outcome}${name ? ` at ${name}` : ''}. ${UNTRUSTED_NOTE}\n${untrusted('run outcome', lines.join('\n'))}`
+  }
+  const state = name === undefined ? undefined : run.steps[name]
+  if (name === undefined || state?.status !== 'parked') return head
+  const selected = await io().readSelected()
+  const left = MAX_FIX_ROUNDS - fixRounds(run, name)
+  const findings = state.findings.map(f => `${selected.includes(f.id) ? '[x]' : '[ ]'} ${f.id} ${f.severity} ${f.action}${where(f)}\n${f.description.replace(/^/gm, '    ')}`)
+  return [
+    head,
+    `Parked at ${name} on ${state.findings.map(f => f.id).join(', ')}; ${left > 0 ? `${left} of ${MAX_FIX_ROUNDS} fix rounds left` : 'no fix rounds left'}. [x] marks a selected finding.`,
+    'Decide with /no-mistakes-fix [ids], /no-mistakes-approve, /no-mistakes-skip or /no-mistakes-abort.',
+    `${UNTRUSTED_NOTE}\n${untrusted('findings', findings.join('\n'))}`,
+  ].join('\n')
 }
 
 function apply(run: Run, name: StepName, outcome: StepOutcome): Run {
@@ -112,9 +137,9 @@ async function claim(name: StepName, from: From, change: (run: Run) => Run): Pro
   return won && run ? run : undefined
 }
 
-async function settle(name: StepName, outcome: StepOutcome, from: From): Promise<'continue' | 'wait'> {
+async function settle(name: StepName, outcome: StepOutcome, from: From): Promise<'continue' | 'wait' | 'lost'> {
   const run = await claim(name, from, r => apply(r, name, outcome))
-  if (!run) return 'wait'
+  if (!run) return 'lost'
   const state = run.steps[name]
   await showStatus()
   if (run.abortRequested) {
@@ -162,7 +187,7 @@ async function advance(): Promise<void> {
     } catch (e) {
       outcome = { step: { status: 'failed', reason: `${name} could not start: ${String(e)}` } }
     }
-    if ((await settle(name, outcome, s => s.status === 'starting')) === 'wait') return
+    if ((await settle(name, outcome, s => s.status === 'starting')) !== 'continue') return
   }
 }
 
@@ -224,34 +249,64 @@ export async function toggle(id: string): Promise<void> {
   await io().writeSelected(list => (list.includes(id) ? list.filter(x => x !== id) : [...list, id]))
 }
 
-export async function press(verdict: Verdict | 'abort'): Promise<void> {
-  const run = await io().readRun()
-  if (!run || run.outcome) return
+export type Pressed = { kind: 'done'; text: string } | { kind: 'abort-pending'; text: string } | { kind: 'refused'; reason: string }
+
+const refused = (reason: string): Pressed => ({ kind: 'refused', reason })
+
+const activity = (state: StepState) => (state.status === 'fixing' ? `in fix round ${state.round}` : state.status)
+
+function progress(run: Run | null): string {
+  if (!run) return ''
+  if (run.outcome) return `The run ${run.outcome}; /no-mistakes-status shows what is left to do.`
   const name = currentStep(run)
-  if (!name) return
+  if (!name) return 'The run is finishing.'
+  const state = run.steps[name]
+  return state.status === 'parked' ? `${name} is parked on ${state.findings.length} finding(s); /no-mistakes-status lists them.` : `${name} is ${activity(state)}.`
+}
+
+async function done(what: string): Promise<Pressed> {
+  return { kind: 'done', text: `${what} ${progress(await io().readRun())}` }
+}
+
+async function lost(name: StepName): Promise<Pressed> {
+  return refused(`${name} was decided meanwhile. ${progress(await io().readRun())}`)
+}
+
+export async function press(verdict: Verdict | 'abort', select: readonly string[] = []): Promise<Pressed> {
+  const run = await io().readRun()
+  if (!run) return refused('No run yet. Start one with /no-mistakes [intent].')
+  if (run.outcome) return refused(`The run on ${run.branch} already ${run.outcome}; start a new one with /no-mistakes.`)
+  const name = currentStep(run)
+  if (!name) return refused('The run is finishing; nothing is left to decide.')
   const state = run.steps[name]
   if (verdict === 'abort') {
     // A push, PR or spawn may be in flight: removing the worktree under it
     // would lose the effect. The owner of the claim finishes the abort.
     if (isClaimed(state)) {
       await io().writeRun(r => (r && !r.outcome && isClaimed(r.steps[name]) ? { ...r, abortRequested: true } : r))
-      io().toast(`${name} is still starting; the run aborts as soon as it settles.`)
-      return
+      return { kind: 'abort-pending', text: `${name} is still starting; the run aborts as soon as it settles.` }
     }
-    return finish('aborted', `aborted at ${name}`)
+    await finish('aborted', `aborted at ${name}`)
+    return { kind: 'done', text: `Aborted at ${name}; /no-mistakes-status shows what is left to do.` }
   }
-  if (state.status !== 'parked') return
+  if (state.status !== 'parked') return refused(`${name} is ${activity(state)}, not parked, so there is nothing to ${verdict}; abort works at any time.`)
   const parked: From = s => s.status === 'parked'
   if (verdict === 'fix') {
-    const selected = await io().readSelected()
-    const findings = state.findings.filter(f => selected.includes(f.id))
-    if (findings.length === 0) return io().toast('Select at least one finding to fix.')
+    const valid = state.findings.map(f => f.id)
+    const unknown = select.filter(id => !valid.includes(id))
+    if (unknown.length > 0) return refused(`${unknown.join(', ')}: no such finding at ${name}; its findings are ${valid.join(', ')}.`)
     const round = fixRounds(run, name) + 1
-    if (round > MAX_FIX_ROUNDS) return io().toast(`${name} already had ${MAX_FIX_ROUNDS} fix rounds; approve, skip or abort.`)
+    if (round > MAX_FIX_ROUNDS) return refused(`${name} already had ${MAX_FIX_ROUNDS} fix rounds; approve, skip or abort.`)
+    // The selection is read here but written only once the claim is won, so a
+    // refused press (lost to a concurrent decision) changes nothing.
+    const chosen = select.length > 0 ? [...select] : await io().readSelected()
+    const findings = state.findings.filter(f => chosen.includes(f.id))
+    if (findings.length === 0) return refused(`Select at least one finding of ${name} to fix, in the pane or with /no-mistakes-fix <ids>.`)
     const decision = { step: name, findingIds: findings.map(f => f.id), verdict } as const
     const startedAt = await io().now()
     const claimed = await claim(name, parked, r => setStep(decide(r, decision), name, { status: 'fixing', round, startedAt }))
-    if (!claimed) return
+    if (!claimed) return lost(name)
+    if (select.length > 0) await io().writeSelected(() => [...select])
     ensurePolling()
     let step: StepState
     try {
@@ -260,12 +315,21 @@ export async function press(verdict: Verdict | 'abort'): Promise<void> {
     } catch (e) {
       step = { status: 'failed', reason: `could not start the fixer: ${String(e)}` }
     }
-    await settle(name, { step }, isClaimed)
-    return
+    const settled = await settle(name, { step }, isClaimed)
+    if (settled === 'lost') return lost(name)
+    if (step.status === 'failed') return done(`Could not send ${decision.findingIds.join(', ')} of ${name} to the fixer: ${step.reason}.`)
+    return done(`Sent ${decision.findingIds.join(', ')} of ${name} to the fixer, round ${round} of ${MAX_FIX_ROUNDS}.`)
   }
   const decision = { step: name, findingIds: state.findings.map(f => f.id), verdict } as const
   const step: StepState = verdict === 'approve' ? { status: 'passed', note: 'approved by the human', findings: state.findings } : { status: 'skipped', reason: 'skipped by the human' }
-  if ((await settle(name, { step, decision }, parked)) === 'continue') await advance()
+  const settled = await settle(name, { step, decision }, parked)
+  if (settled === 'lost') return lost(name)
+  const what = verdict === 'approve' ? `Approved ${name} as is.` : `Skipped ${name}.`
+  if (settled !== 'continue') return done(what)
+  // The next step runs in the background, as the pane's buttons start it: the
+  // reply returns before a step such as a test command has finished.
+  void advance().catch(e => io().toast(`no-mistakes could not continue after ${name}: ${String(e)}`))
+  return { kind: 'done', text: `${what} The run continues in the background; /no-mistakes-status shows where it is.` }
 }
 
 function ensurePolling(): void {

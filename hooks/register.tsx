@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register, ToolCheckResult } from 'claude-code'
 
 import type { Run } from '../types'
-import { onAgentAnswer, ownerOf, resume, startRun } from './engine'
+import { onAgentAnswer, ownerOf, press, resume, startRun, statusReport } from './engine'
 import { asCall, isAllowed, judge, writtenPath } from './guard'
 import { bind, io } from './io'
 import { registerPane } from './pane'
@@ -30,6 +30,13 @@ async function ownerOfCall(run: Run | null, agentId: string | undefined): Promis
   const owned = await ownerOf(run, agentId)
   return owned === 'not-ours' ? undefined : { run, owned }
 }
+
+const DECISIONS = [
+  { name: 'no-mistakes-fix', verdict: 'fix', description: "Send the parked step's selected findings, or the ones named, to the fixer", argumentHint: '[finding ids]' },
+  { name: 'no-mistakes-approve', verdict: 'approve', description: 'Approve every finding of the parked step as is' },
+  { name: 'no-mistakes-skip', verdict: 'skip', description: 'Skip the parked step' },
+  { name: 'no-mistakes-abort', verdict: 'abort', description: 'Abort the no-mistakes run' },
+] as const
 
 // A deny or an ask that stands on a settings rule, a classic hook or a
 // permission setting is the user's or their organization's, and nothing here
@@ -68,7 +75,8 @@ export const register: Register = on => {
       writeSelected: change => update($, selectedAtom, change),
     })
     await $.command.register({ name: 'no-mistakes', description: 'Gate this branch: review, test, document, lint, push, PR, CI in a disposable worktree', argumentHint: '[intent]' })
-    await $.command.register({ name: 'no-mistakes-status', description: 'Reopen the no-mistakes run pane' })
+    await $.command.register({ name: 'no-mistakes-status', description: 'Reopen the no-mistakes run pane and list what the run needs from you' })
+    for (const { verdict: _, ...command } of DECISIONS) await $.command.register(command)
     for (const spec of AGENT_SPECS) await $.agent.register(spec)
     $.ui.status(statusText(await storedRun($)))
     await resume()
@@ -133,9 +141,19 @@ export const register: Register = on => {
 
   on('command.run', { command: 'no-mistakes-status' }, async () => {
     await io().openPane()
-    const run = await io().readRun()
-    return { text: run ? `${statusText(run)} (${run.branch}, worktree ${run.worktree})` : 'No run yet. Start one with /no-mistakes [intent].' }
+    return { text: await statusReport() }
   })
+
+  for (const { name, verdict } of DECISIONS) {
+    on('command.run', { command: name }, async (_$, e) => {
+      const named = e.args.split(/[\s,]+/).filter(id => id !== '')
+      // Only fix takes finding ids. The others would drop them without a word,
+      // so an approve or an abort typed with an id is refused, not carried out.
+      if (verdict !== 'fix' && named.length > 0) return { text: `no-mistakes refused: /${name} takes no arguments, so ${named.join(', ')} was not used. Select findings in the pane, or use /no-mistakes-fix <ids>.` }
+      const pressed = await press(verdict, named)
+      return { text: pressed.kind === 'refused' ? `no-mistakes refused: ${pressed.reason}` : pressed.text }
+    })
+  }
 
   on('turn.complete', async (_$, e, next) => {
     if (e.agentId !== undefined) await onAgentAnswer(e.agentId, e.answer, e.reason)
