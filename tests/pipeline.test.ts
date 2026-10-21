@@ -2514,3 +2514,153 @@ for (const [config, why] of BAD_AUTOFIX_CONFIGS) {
     expect(w.spawns).toHaveLength(0)
   })
 }
+
+const AUTOFIX = `${CONFIG}autofix: true\n`
+const BUG = { id: 'r1', severity: 'error', action: 'auto-fix', description: 'off by one' } as const
+
+test('under autofix, a review that parks on auto-fix findings alone goes to the fixer without a press, as the pipeline\'s decision', async ($, on) => {
+  const w = world($, on, { config: AUTOFIX })
+  await start($)
+  await complete($, 'agent-1', answer([BUG, { id: 'r2', severity: 'info', action: 'no-op', description: 'comment style' }]))
+  let run = lastRun(w)
+  expect(run.decisions).toEqual([{ step: 'review', findingIds: ['r1'], verdict: 'fix', isAuto: true }])
+  expect(run.steps.review).toMatchObject({ status: 'fixing', agentId: 'agent-2', round: 1 })
+  expect(w.notifies).toBe(0)
+  expect(w.spawns[1]).toMatchObject({ type: `${PLUGIN}:fixer`, description: `no-mistakes fix review 1 (${run.id}/1)` })
+  expect(w.spawns[1]!.prompt).toContain('The pipeline chose to fix these findings')
+  expect(w.spawns[1]!.prompt).toContain('off by one')
+  expect(w.spawns[1]!.prompt).not.toContain('comment style')
+
+  w.dirty = true
+  w.worktreeHead = FIXED
+  await complete($, 'agent-2', 'Fixed.')
+  run = lastRun(w)
+  expect(w.calls).toContain('git commit -q -m fix(no-mistakes/review): fix round 1')
+  expect(run.steps.review).toMatchObject({ status: 'running', agentId: 'agent-3' })
+  expect(w.spawns[2]).toMatchObject({ type: `${PLUGIN}:reviewer` })
+  expect(w.spawns[2]!.prompt).toContain('the pipeline chose to fix for findings r1')
+  await complete($, 'agent-3', answer([]))
+  run = lastRun(w)
+  expect(run.steps.review).toMatchObject({ status: 'passed' })
+  expect(run.steps.document).toMatchObject({ status: 'running', agentId: 'agent-4' })
+})
+
+test('under autofix, an ask-user finding beside an auto-fix one parks the step for the human, both listed', async ($, on) => {
+  const w = world($, on, { config: AUTOFIX })
+  await start($)
+  await complete($, 'agent-1', answer([BUG, { id: 'r2', severity: 'warning', action: 'ask-user', description: 'naming' }]))
+  const run = lastRun(w)
+  expect(run.steps.review).toMatchObject({ status: 'parked', findings: [{ id: 'r1' }, { id: 'r2' }] })
+  expect(run.decisions).toEqual([])
+  expect(w.spawns).toHaveLength(1)
+  expect(w.notifies).toBe(1)
+  const drawn = await w.pane('terminal')
+  expect(drawn).toMatch(/toggle:r1=\[x\] error +fixable off by one/)
+  expect(drawn).toMatch(/toggle:r2=\[x\] warning +your call naming/)
+})
+
+test('under autofix, the fourth park after three automatic rounds stays parked with no round left', async ($, on) => {
+  const w = world($, on, { config: AUTOFIX })
+  await start($)
+  await complete($, 'agent-1', answer([BUG]))
+  for (let round = 1; round <= 3; round++) {
+    expect(lastRun(w).steps.review).toMatchObject({ status: 'fixing', agentId: `agent-${2 * round}`, round })
+    await complete($, `agent-${2 * round}`, 'Fixed.')
+    await complete($, `agent-${2 * round + 1}`, answer([BUG]))
+  }
+  const run = lastRun(w)
+  expect(run.steps.review).toMatchObject({ status: 'parked', findings: [{ id: 'r1' }] })
+  expect(run.decisions).toHaveLength(3)
+  expect(run.decisions.every(d => d.isAuto && d.verdict === 'fix')).toBe(true)
+  expect(w.spawns).toHaveLength(7)
+  expect(w.notifies).toBe(1)
+  const drawn = await w.pane('terminal')
+  expect(drawn).toContain('Parked at review · no fix rounds left')
+  expect(drawn).toContain('fix=Fix selected (no rounds left)')
+})
+
+test('with autofix: false, an auto-fix finding parks the step as it does with no autofix line', async ($, on) => {
+  const w = world($, on, { config: `${CONFIG}autofix: false\n` })
+  await start($)
+  await complete($, 'agent-1', answer([BUG]))
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'parked' })
+  expect(lastRun(w).decisions).toEqual([])
+  expect(w.spawns).toHaveLength(1)
+})
+
+test('a run stored before autofix existed (no autofix field) parks as before, whatever the config says', async ($, on) => {
+  const w = world($, on, { legacy: true, config: AUTOFIX })
+  await start($)
+  await complete($, 'agent-1', answer([BUG]))
+  const run = lastRun(w)
+  expect(run.autofix).toBeUndefined()
+  expect(run.steps.review).toMatchObject({ status: 'parked' })
+  expect(run.decisions).toEqual([])
+  expect(w.spawns).toHaveLength(1)
+})
+
+test('under autofix, a test command that still fails after the fixer goes back to the fixer as a fix round', async ($, on) => {
+  const w = world($, on, { config: AUTOFIX })
+  w.rules.push(line => (line === 'sh -c npm test' ? { exitCode: 1, stdout: '1 failing' } : undefined))
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  expect(lastRun(w).steps.test).toMatchObject({ status: 'running', agentId: 'agent-2' })
+  await complete($, 'agent-2', answer([]))
+  const run = lastRun(w)
+  expect(run.decisions).toEqual([{ step: 'test', findingIds: ['test:command'], verdict: 'fix', isAuto: true }])
+  expect(run.steps.test).toMatchObject({ status: 'fixing', agentId: 'agent-3', round: 1 })
+  expect(w.spawns[2]!.prompt).toContain('still exits 1')
+})
+
+test('an automatic round that times out parks on the timeout finding, which no round takes up on its own', async ($, on) => {
+  const w = world($, on, { config: AUTOFIX })
+  await start($)
+  await complete($, 'agent-1', answer([BUG]))
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'fixing', agentId: 'agent-2' })
+  w.dirty = true
+  await w.clock.advance(31 * 60_000)
+  const run = lastRun(w)
+  expect(w.stops).toEqual(['agent-2'])
+  expect(w.calls).toContain('git commit -q -m fix(no-mistakes/review): fix round 1')
+  expect(run.steps.review).toMatchObject({ status: 'parked', findings: [{ id: 'review:timeout', action: 'ask-user' }] })
+  expect(run.decisions).toHaveLength(1)
+  expect(w.spawns).toHaveLength(2)
+  expect(w.notifies).toBe(1)
+})
+
+test('Abort during an automatic round\'s spawn is honoured once the spawn settles, and the fixer is stopped', async ($, on) => {
+  const w = world($, on, { config: AUTOFIX })
+  let release: (() => void) | undefined
+  let reached: (() => void) | undefined
+  const gate = new Promise<void>(r => { release = r })
+  const spawning = new Promise<void>(r => { reached = r })
+  let reviewAnswered = false
+  w.rules.push(async line => (reviewAnswered && line.includes('--stat') ? (reached!(), await gate, undefined) : undefined))
+  await start($)
+  reviewAnswered = true
+  const last = complete($, 'agent-1', answer([BUG]))
+  await spawning
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'fixing', round: 1 })
+  expect(lastRun(w).steps.review).not.toHaveProperty('agentId')
+  await pressOnce($, 'abort')
+  expect(lastRun(w).outcome).toBeUndefined()
+  release!()
+  await last
+  const run = lastRun(w)
+  expect(run.outcome).toBe('aborted')
+  expect(w.spawns).toHaveLength(2)
+  expect(w.stops).toContain('agent-2')
+  expect(w.calls).toContain(`git worktree remove --force ${run.worktree}`)
+})
+
+test('a fixer that fails to start for an automatic round fails the run, as it does for a human round', async ($, on) => {
+  const w = world($, on, { config: AUTOFIX })
+  w.spawnThrows = 'no-mistakes fix review'
+  await start($)
+  await complete($, 'agent-1', answer([BUG]))
+  const run = lastRun(w)
+  expect(run.steps.review).toMatchObject({ status: 'failed' })
+  expect(run.outcome).toBe('failed')
+  expect(run.note).toContain('could not start the fixer')
+  expect(run.decisions).toEqual([{ step: 'review', findingIds: ['r1'], verdict: 'fix', isAuto: true }])
+})

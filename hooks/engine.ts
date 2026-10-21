@@ -2,7 +2,7 @@ import type { Finding, FollowUp, Outcome, Run, StepName, StepState, Verdict } fr
 import * as git from './git'
 import { io } from './io'
 import { fixPrompt, reaskPrompt, UNTRUSTED_NOTE, untrusted } from './prompts'
-import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isBlocking, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, report, setStep, skipRest, statusText, timeoutFinding } from './run'
+import { AGENT_TIMEOUT_MS, agentOf, autoFixable, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isBlocking, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, report, setStep, skipRest, statusText, timeoutFinding } from './run'
 import { AGENT_STEPS, commitMessage, FIXER, pollCi, spawn, STEP_DEFS } from './steps'
 import type { StepOutcome } from './steps'
 
@@ -150,10 +150,16 @@ async function settle(name: StepName, outcome: StepOutcome, from: From): Promise
     case 'failed':
       await finish('failed', `${name} failed: ${state.reason}`)
       return 'wait'
-    case 'parked':
+    case 'parked': {
+      const auto = autoFixable(run, name, state.findings)
+      if (auto) {
+        await autoFix(run, name, auto)
+        return 'wait'
+      }
       await io().writeSelected(() => state.findings.filter(isBlocking).map(f => f.id))
       await io().notify(`parked at ${name}: ${state.findings.length} finding(s) need your call`)
       return 'wait'
+    }
     case 'running':
     case 'fixing':
       ensurePolling()
@@ -162,6 +168,23 @@ async function settle(name: StepName, outcome: StepOutcome, from: From): Promise
     default:
       return 'continue'
   }
+}
+
+async function autoFix(run: Run, name: StepName, findings: Finding[]): Promise<void> {
+  const round = fixRounds(run, name) + 1
+  const decision = { step: name, findingIds: findings.map(f => f.id), verdict: 'fix', isAuto: true } as const
+  const startedAt = await io().now()
+  const claimed = await claim(name, s => s.status === 'parked', r => setStep(decide(r, decision), name, { status: 'fixing', round, startedAt }))
+  if (!claimed) return
+  ensurePolling()
+  let step: StepState
+  try {
+    const started = await spawn(claimed, FIXER, fixPrompt(claimed, decision, findings, await git.diffStat(claimed)), `fix ${name} ${round}`)
+    step = 'error' in started ? { status: 'failed', reason: `could not start the fixer: ${started.error}` } : { status: 'fixing', agentId: started.agentId, round, startedAt }
+  } catch (e) {
+    step = { status: 'failed', reason: `could not start the fixer: ${String(e)}` }
+  }
+  await settle(name, { step }, isClaimed)
 }
 
 async function replayEarly(agentId: string): Promise<void> {
@@ -310,7 +333,7 @@ export async function press(verdict: Verdict | 'abort', select: readonly string[
     ensurePolling()
     let step: StepState
     try {
-      const started = await spawn(claimed, FIXER, fixPrompt(claimed, name, findings, await git.diffStat(claimed)), `fix ${name} ${round}`)
+      const started = await spawn(claimed, FIXER, fixPrompt(claimed, decision, findings, await git.diffStat(claimed)), `fix ${name} ${round}`)
       step = 'error' in started ? { status: 'failed', reason: `could not start the fixer: ${started.error}` } : { status: 'fixing', agentId: started.agentId, round, startedAt }
     } catch (e) {
       step = { status: 'failed', reason: `could not start the fixer: ${String(e)}` }

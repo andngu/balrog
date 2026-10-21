@@ -1,4 +1,4 @@
-import type { CommandName, Finding, Run, StepName } from '../types'
+import type { CommandName, Decision, Finding, Run, StepName } from '../types'
 import { allowedCommands } from './guard'
 import { describeVerdict, isBlocking } from './run'
 
@@ -71,8 +71,8 @@ export function commandPrompt(run: Run, step: Extract<CommandName, StepName>, co
   return `${header(run, stat)}\n\nStep "${step}". The configured ${step} command failed:\n${command}\n\nIts output:\n${untrusted(`${step} output`, output)}\n\nFix the causes at the root, re-run the command until it exits 0 or you have spent three rounds, and report what remains. The pipeline commits your edits and re-runs the command after you answer.`
 }
 
-export function fixPrompt(run: Run, step: StepName, findings: Finding[], stat: string): string {
-  return `${header(run, stat)}\n\nStep "${step}". The human chose to fix these findings:\n${findingsBlock(findings)}\n\nFix each at the root cause and report what remains. The pipeline commits your edits and runs the step's check again after you answer.`
+export function fixPrompt(run: Run, decision: Decision, findings: Finding[], stat: string): string {
+  return `${header(run, stat)}\n\nStep "${decision.step}". ${decision.isAuto ? 'The pipeline' : 'The human'} chose to fix these findings:\n${findingsBlock(findings)}\n\nFix each at the root cause and report what remains. The pipeline commits your edits and runs the step's check again after you answer.`
 }
 
 export function ciFixPrompt(run: Run, failing: string[], log: string, stat: string): string {

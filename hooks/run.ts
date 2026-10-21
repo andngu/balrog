@@ -32,7 +32,6 @@ export function newRun(seed: RunSeed): Run {
   return { ...seed, head: seed.localHead, remoteHead: '', commands: {}, exclude: [], autofix: false, agents: [], steps, decisions: [] }
 }
 
-// A run stored by an earlier version lacks the fields added since.
 export function fromStore(run: Run): Run {
   return run.exclude === undefined || run.autofix === undefined ? { ...run, exclude: run.exclude ?? [], autofix: run.autofix ?? false } : run
 }
@@ -61,6 +60,16 @@ export function decide(run: Run, decision: Decision): Run {
 
 export function fixRounds(run: Run, step: StepName): number {
   return run.decisions.filter(d => d.step === step && d.verdict === 'fix').length
+}
+
+export function isAutoRound(run: Run, step: StepName): boolean {
+  return run.decisions.findLast(d => d.step === step && d.verdict === 'fix')?.isAuto === true
+}
+
+export function autoFixable(run: Run, step: StepName, findings: Finding[]): Finding[] | undefined {
+  if (!run.autofix || fixRounds(run, step) >= MAX_FIX_ROUNDS) return undefined
+  const blocking = findings.filter(isBlocking)
+  return blocking.length > 0 && blocking.every(f => f.action === 'auto-fix') ? blocking : undefined
 }
 
 export function agentOf(state: StepState): string | undefined {
