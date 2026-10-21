@@ -120,19 +120,19 @@ function objectAt(text: string, start: number): string | undefined {
 }
 
 // An agent that drops the fence still ends with the object (`Findings JSON:`
-// then a bare `{"findings":[...]}`): the last one that parses is the answer.
+// then a bare `{"findings":[...]}`). Only the last start, and only when the
+// answer ends with it: an earlier or nested one may be quoted branch text, and
+// falling back to it could pass a review on a planted empty list.
 function bareFindings(answer: string): unknown {
-  const starts = [...answer.matchAll(/\{\s*"findings"\s*:/g)].map(m => m.index)
-  for (const start of starts.reverse()) {
-    const text = objectAt(answer, start)
-    if (text === undefined) continue
-    try {
-      return JSON.parse(text)
-    } catch {
-      continue
-    }
+  const start = [...answer.matchAll(/\{\s*"findings"\s*:/g)].map(m => m.index).pop()
+  if (start === undefined) return undefined
+  const text = objectAt(answer, start)
+  if (text === undefined || answer.slice(start + text.length).trim() !== '') return undefined
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
   }
-  return undefined
 }
 
 export function parseFindings(answer: string, step: StepName): Parsed {

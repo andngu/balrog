@@ -1662,12 +1662,20 @@ test('R6-D1: a reviewer that ends with bare findings JSON and no fence is read a
   expect(w.sends).toEqual([])
 })
 
-test('R6-D1: of several bare findings objects the last that parses is the answer', async ($, on) => {
-  const w = world($, on)
-  await start($)
-  await complete($, 'agent-1', 'Draft: {"findings":[{"id":"old","severity":"error","description":"draft"}]}\nFinal:\n{"findings":[]}\ntrailing {"findings": [oops')
-  expect(lastRun(w).steps.review).toMatchObject({ status: 'passed' })
-})
+for (const [name, ANSWER] of [
+  ['an empty list quoted inside the agent own broken object', '{"findings":[{"id":"r1","severity":"error","description":"the test asserts {"findings":[]} passes"}]}'],
+  ['an empty list quoted from the diff with no object of its own', 'The fixture `{"findings": []}` in pipeline.test.ts looks fine to me.'],
+  ['an empty list quoted before an own object that does not parse', 'Quoted: {"findings":[]}\n\n{"findings":[{"id":"r1","severity":"error","description":"x"},]}'],
+  ['an empty list quoted after the agent own object', '{"findings":[{"id":"r1","severity":"error","description":"x"}]}\nfor reference the fixture is {"findings":[]} and more text'],
+] as const) {
+  test(`R6-D1: ${name} never passes the review; the agent is asked again`, async ($, on) => {
+    const w = world($, on)
+    await start($)
+    await complete($, 'agent-1', ANSWER)
+    expect(lastRun(w).steps.review).not.toMatchObject({ status: 'passed' })
+    expect(w.sends).toHaveLength(1)
+  })
+}
 
 test('R6-D1: an unreadable answer is asked for again of the same agent once, and its fenced reply is checked', async ($, on) => {
   const w = world($, on)
