@@ -22,14 +22,18 @@ export const git = (cwd: string, ...args: string[]) => exec(['git', ...HOOKS_OFF
 
 export const gh = (cwd: string, args: string[], stdin?: string) => exec(['gh', ...args], cwd, stdin)
 
+// git's own words for a signer that did not sign (gpg, gpgsm, ssh-keygen);
+// a bare /sign/ would take a commit subject like "Redesign" for one.
+const SIGNING = /gpg failed to sign|failed to sign the data|cannot run (gpg|gpgsm|ssh-keygen)|signingkey|ssh signing|failed to write commit object/i
+
 // A commit git refuses for the user's own setup rather than for anything the
 // run did: no identity, or signing that is on and does not work.
 function setupProblem(err: string): string | undefined {
   if (/tell me who you are|unable to auto-detect email|empty ident name|identity unknown/i.test(err)) {
     return 'git identity not set, so git cannot commit: run git config --global user.name "<name>" and git config --global user.email "<email>", then run again'
   }
-  if (/sign|failed to write commit object/i.test(err)) {
-    const line = err.split(/[\r\n]+/).find(l => /sign/i.test(l)) ?? err.split('\n')[0]
+  if (SIGNING.test(err)) {
+    const line = err.split(/[\r\n]+/).find(l => SIGNING.test(l)) ?? err.split('\n')[0]
     return `commit signing failed (commit.gpgsign is on and the signer did not sign): ${line?.trim().replace(/[:.]+$/, '')}. Make a signed git commit work in a terminal, then run again`
   }
   return undefined
@@ -209,9 +213,11 @@ export async function rebase(run: Run): Promise<Rebased> {
   // would move the user's other branches or their stash from the worktree.
   const rebased = await wt(run, 'rebase', '--no-update-refs', '--no-autostash', `origin/${run.base}`)
   if (!rebased.ok) {
+    // A stop with unmerged paths is a conflict whatever the output says.
+    const unmerged = await wt(run, 'ls-files', '--unmerged')
     await wt(run, 'rebase', '--abort')
     const detail = rebased.err || rebased.out
-    const setup = setupProblem(detail)
+    const setup = unmerged.ok && unmerged.out === '' ? setupProblem(detail) : undefined
     return setup === undefined ? { kind: 'conflict', detail: detail.slice(0, 2000) } : { kind: 'error', detail: setup }
   }
   const head = await headOf(run)
