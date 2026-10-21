@@ -3287,3 +3287,39 @@ test('a recheck fix round leaves a test step the human approved as it is, and ru
     { step: 'recheck', findingIds: ['c1'], verdict: 'fix' },
   ])
 })
+
+test('the review run again after a review fix round re-stamps the reviewed head, so a recheck with nothing after it is skipped', async ($, on) => {
+  const w = world($, on, { config: AUTOFIX })
+  await start($)
+  await complete($, 'agent-1', answer([BUG]))
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'fixing', agentId: 'agent-2', round: 1 })
+  w.dirty = true
+  w.worktreeHead = FIXED
+  await complete($, 'agent-2', 'Fixed.')
+  let run = lastRun(w)
+  expect(run.steps.review).toMatchObject({ status: 'running', agentId: 'agent-3' })
+  expect(run.reviewedHead).toBe(FIXED)
+  await complete($, 'agent-3', answer([]))
+  await complete($, 'agent-4', answer([]))
+  run = lastRun(w)
+  expect(run.steps.recheck).toMatchObject({ status: 'skipped', reason: 'no commits since the review' })
+  expect(w.spawns).toHaveLength(4)
+  expect(w.calls.some(c => c.includes(`${REBASED}...HEAD`))).toBe(false)
+  expect(w.calls).toContain(`${PUSH} ${FIXED}:refs/heads/feat --force-with-lease=refs/heads/feat:`)
+  expect(run.outcome).toBe('passed')
+})
+
+test('the recheck fails closed when the worktree HEAD cannot be read', async ($, on) => {
+  const w = world($, on)
+  let broken = false
+  w.rules.push((line, cwd) => {
+    if (line === 'sh -c npm run lint') broken = true
+    return broken && line === 'git rev-parse --verify HEAD' && cwd !== '/repo' ? { exitCode: 128, stderr: 'fatal: bad revision' } : undefined
+  })
+  await toRecheck($, w)
+  const run = lastRun(w)
+  expect(run.steps.recheck).toMatchObject({ status: 'failed', reason: 'cannot read the worktree HEAD' })
+  expect(run.outcome).toBe('failed')
+  expect(w.spawns).toHaveLength(3)
+  expect(w.calls.some(c => c.startsWith('git push'))).toBe(false)
+})
