@@ -2,7 +2,7 @@
 
 A Claude Code mod port of [kunchenguid/no-mistakes](https://github.com/kunchenguid/no-mistakes) (MIT).
 
-`/no-mistakes [intent]` gates the current feature branch: rebase onto `origin/<default>`, adversarial review, test, document, lint, push with a lease, PR, CI watch. Every step runs in a disposable detached worktree under `~/.cache/no-mistakes/` (mode 0700), never in your checkout. Blocking findings park the run in a pane where you fix, approve, skip or abort.
+`/no-mistakes [intent]` gates the current feature branch: rebase onto `origin/<default>`, adversarial review, test, document, lint, push with a lease, PR, CI watch. Every step runs in a disposable detached worktree under `~/.cache/no-mistakes/` (mode 0700), never in your checkout. Blocking findings park the run in a pane where you fix, approve, skip or abort, or you decide from the chat with `/no-mistakes-fix [finding ids]`, `/no-mistakes-approve`, `/no-mistakes-skip` and `/no-mistakes-abort`. `/no-mistakes-status` reopens the pane and reports the run.
 
 ## Install
 
@@ -38,6 +38,8 @@ The pane is a board of the eight steps, one row each. A row holds a glyph and th
 When a step parks, the findings are listed under the board, one row each. A row shows the severity, whether the finding is fixable, your call or needs no action, the file and line when the agent named one, and the first line of the description. Only the blocking findings start selected, and `[x]` marks a selected one. Press a digit, `1` to `9`, to toggle the finding it marks; a finding past the ninth has no digit, so click its row. Press `f` to send the selected findings to the fixer, `a` to approve every finding as is, `s` to skip the step, or `x` to abort. The headline above the findings says how many of the three fix rounds are left, and the Fix button says how many findings it would send, or that no round is left. In the terminal, keys reach the pane only while it has the keyboard, after `ctrl+x tab` or a click, and the pane says so until then.
 
 When the run ends, the board keeps every step's last fact, except that a step still running when the run ends reads `stopped`. Under it come the outcome and what is left for you to do, each command on its own line: pull the pushed commits into your branch, remove a kept worktree, or recover or drop the commits the run pinned.
+
+You can make the same decisions from the chat, and each command answers in text. `/no-mistakes-fix` sends the selected findings to the fixer; `/no-mistakes-fix r1 r2` first makes exactly those findings the selection, and refuses, changing nothing, when an id is not one of the parked step's findings. `/no-mistakes-approve`, `/no-mistakes-skip` and `/no-mistakes-abort` do what `a`, `s` and `x` do. Each command says what it did, or why it refused: no run, a run that already ended, a step that is not parked (it names the step and what it is doing), no fix round left, or nothing selected. While a step is parked, `/no-mistakes-status` lists every finding in full, with its id, severity, action, file and line, whether it is selected, and the whole description, with the fix rounds left. Once the run ends, it gives the outcome and the follow-up commands. The findings and the note reach your session as untrusted data, as the run note does.
 
 ## Who runs what
 
