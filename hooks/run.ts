@@ -196,6 +196,15 @@ export function statusText(run: Run | null): string | undefined {
   return `${PLUGIN}: ${name}…`
 }
 
+export function commitLines(commits: string): string[] {
+  return commits.split('\n').filter(line => /^[0-9a-f]{7,} /.test(line))
+}
+
+export function report(run: Run): string {
+  const followUps = (run.followUps ?? []).map(f => (f.command === undefined ? f.text : `${f.text} ${f.command}`))
+  return [run.note ?? '', ...followUps].filter(part => part !== '').join('. ')
+}
+
 export function describeVerdict(verdict: Verdict): string {
   return verdict === 'fix' ? 'chose to fix' : verdict === 'approve' ? 'approved as is' : 'skipped the step'
 }
