@@ -324,8 +324,12 @@ export async function press(verdict: Verdict | 'abort', select: readonly string[
   const step: StepState = verdict === 'approve' ? { status: 'passed', note: 'approved by the human', findings: state.findings } : { status: 'skipped', reason: 'skipped by the human' }
   const settled = await settle(name, { step, decision }, parked)
   if (settled === 'lost') return lost(name)
-  if (settled === 'continue') await advance()
-  return done(verdict === 'approve' ? `Approved ${name} as is.` : `Skipped ${name}.`)
+  const what = verdict === 'approve' ? `Approved ${name} as is.` : `Skipped ${name}.`
+  if (settled !== 'continue') return done(what)
+  // The next step runs in the background, as the pane's buttons start it: the
+  // reply returns before a step such as a test command has finished.
+  void advance().catch(e => io().toast(`no-mistakes could not continue after ${name}: ${String(e)}`))
+  return { kind: 'done', text: `${what} The run continues in the background; /no-mistakes-status shows where it is.` }
 }
 
 function ensurePolling(): void {

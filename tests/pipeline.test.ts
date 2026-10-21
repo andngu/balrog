@@ -722,11 +722,13 @@ test('/no-mistakes-approve records the decision the pane\'s Approve records and 
   await start($)
   await complete($, 'agent-1', answer([{ id: 'r1', severity: 'warning', action: 'ask-user', description: 'naming' }]))
   const text = await say($, 'no-mistakes-approve')
-  expect(text).toBe('Approved review as is. document is running.')
+  expect(text).toBe('Approved review as is. The run continues in the background; /no-mistakes-status shows where it is.')
   const run = lastRun(w)
   expect(run.decisions).toEqual([{ step: 'review', findingIds: ['r1'], verdict: 'approve' }])
   expect(run.steps.review).toMatchObject({ status: 'passed', note: 'approved by the human', findings: [{ id: 'r1' }] })
-  expect(run.steps.document).toMatchObject({ status: 'running', agentId: 'agent-2' })
+  // The reply does not wait for the next step: its fixer starts in the background.
+  for (let i = 0; i < 500 && lastRun(w).steps.document.status !== 'running'; i++) await new Promise<void>(done => setTimeout(done, 2))
+  expect(lastRun(w).steps.document).toMatchObject({ status: 'running', agentId: 'agent-2' })
 })
 
 test('/no-mistakes-abort ends the run and removes the worktree; later decisions are refused', async ($, on) => {
