@@ -49,7 +49,7 @@ const stat = async (p: string) => {
 }
 bind({
   run: (argv, init) => sh(argv, init?.cwd ?? '/', init?.stdin),
-  spawn: nope, agents: nope, now: nope, every: nope, fork: nope, complete: nope, cwd: nope, openPane: nope, status: nope, toast: nope, notify: nope, readRun: nope, writeRun: nope, readSelected: nope, writeSelected: nope,
+  spawn: nope, agents: nope, now: nope, every: nope, fork: nope, complete: nope, cwd: nope, openPane: nope, status: nope, toast: nope, notify: nope, invalidate: nope, readRun: nope, writeRun: nope, readSelected: nope, writeSelected: nope,
   home: async () => home,
   cacheHome: async () => undefined,
   read: async p => readFileSync(p, 'utf8'),

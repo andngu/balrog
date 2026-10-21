@@ -433,7 +433,7 @@ test('Skip and Abort are recorded; Abort removes the worktree', async ($, on) =>
   expect(w.calls).toContain(`git worktree remove --force ${run.worktree}`)
   const lines = (await w.pane('terminal')).split('\n')
   expect(lines).toContain('Run aborted at document')
-  expect(lines).toContain('- document stopped')
+  expect(lines).toContain('! document 1 finding, 1 blocking')
 })
 
 test('a clean run pushes with a lease on the observed remote head, skips pr without gh, and removes the worktree', async ($, on) => {
@@ -547,13 +547,53 @@ test('the pane is redrawn on every tick while a step runs, and not once the run 
   expect(w.invalidates).toBe(after)
 })
 
+// The colour of the row whose text holds `text`, as the pane draws it now.
+const rowColour = async ($: Engine, text: string): Promise<unknown> => {
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  const row = (await ui.findAll({ type: 'Text' })).find(found => found.text?.includes(text))
+  await ui.unmount()
+  return row?.props.color
+}
+
 test('a running step shows its clock, and warns before the 30 minute timeout', async ($, on) => {
   const w = world($, on)
   await start($)
   await w.clock.advance(12 * 60_000)
   expect(await w.pane('terminal')).toContain('reviewer working · 12m of 30m')
+  expect(await rowColour($, 'reviewer working · 12m')).toBe('claude')
   await w.clock.advance(15 * 60_000)
   expect(await w.pane('terminal')).toContain('reviewer working · 27m of 30m, times out in 3m')
+  expect(await rowColour($, 'reviewer working · 27m')).toBe('warning')
+})
+
+test('a failed step shows its first line and the last four lines of a longer reason', async ($, on) => {
+  const w = world($, on)
+  const conflicts = [1, 2, 3, 4, 5, 6].map(n => `CONFLICT ${n}: file${n}.ts`)
+  w.rules.push(line => (line === REBASE ? { exitCode: 1, stderr: conflicts.join('\n') } : undefined))
+  await start($)
+  expect(lastRun(w).steps.rebase).toMatchObject({ status: 'failed' })
+  const drawn = (await w.pane('terminal')).split('\n')
+  expect(drawn).toContain('…')
+  for (const line of conflicts.slice(2)) expect(drawn).toContain(line)
+  for (const line of conflicts.slice(0, 2)) expect(drawn).not.toContain(line)
+})
+
+test('a parked step keeps its findings once the run ends', async ($, on) => {
+  const w = world($, on)
+  await parkReview($, w)
+  await pressOnce($, 'abort')
+  expect(lastRun(w).outcome).toBe('aborted')
+  const lines = (await w.pane('terminal')).split('\n')
+  expect(lines).toContain('Run aborted at review')
+  expect(lines).toContain('! review   1 finding, 1 blocking')
+})
+
+test('a step still running when the run ends reads stopped', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await pressOnce($, 'abort')
+  expect(lastRun(w).outcome).toBe('aborted')
+  expect((await w.pane('terminal')).split('\n')).toContain('- review   stopped')
 })
 
 test('a running run draws its header, its steps and Abort alone; a parked one adds the call', async ($, on) => {
@@ -1863,6 +1903,19 @@ for (const [origin, repo] of ORIGINS) {
     for (const c of ghs) expect(c.endsWith(` --repo ${repo}`)).toBe(true)
   })
 }
+
+test('a pr create that prints no URL fails the step, and nothing gh printed becomes a link', async ($, on) => {
+  const w = world($, on, { gh: true })
+  w.rules.push(line => (line.startsWith('gh pr create') ? { stdout: 'created the pull request' } : undefined))
+  await start($)
+  await passTwo($)
+  const run = lastRun(w)
+  expect(run.steps.pr).toMatchObject({ status: 'failed', reason: expect.stringContaining('printed no pull request URL') })
+  expect(run.prUrl).toBeUndefined()
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+  await ui.unmount()
+})
 
 test('R6-8: the workflow count is read from origin\'s repository on its host', async ($, on) => {
   const w = world($, on, { gh: true, origin: 'ssh://git@ghe.example.com:2222/team/svc.git' })
