@@ -125,7 +125,7 @@ function world($: Engine, on: On, options: Options = {}): World {
     },
     line => (line === 'git diff --cached --quiet' ? { exitCode: w.dirty ? 1 : 0 } : undefined),
     line => (line.startsWith('git diff --quiet') ? { exitCode: 1 } : undefined),
-    line => (line.startsWith('git diff') && line.includes('--stat') ? { stdout: ' a.ts | 2 +-' } : undefined),
+    line => (line.replace('git --attr-source=origin/main ', 'git ').startsWith('git diff') && line.includes('--stat') ? { stdout: ' a.ts | 2 +-' } : undefined),
     line => (line === DIFF ? { stdout: 'diff --git a/a.ts b/a.ts\n+const x = 1' } : undefined),
     line => {
       if (line.startsWith('git commit')) w.dirty = false
@@ -1886,5 +1886,19 @@ for (const how of ['deny', 'error', 'throw'] as const) {
     w.writeFails = undefined
     expect(isDenied(await toolCall($, 'agent-2', { tool: 'Write', file_path: `${wt}/ok.ts`, content: 'x' }))).toBe(false)
     expect(lastRun(w).written).toEqual(['ok.ts'])
+  })
+}
+
+for (const isOld of [false, true]) {
+  test(`R6-6: the stat agents get reads attributes from origin/<base>${isOld ? ', or the branch\'s on a git without --attr-source' : ''}`, async ($, on) => {
+    const w = world($, on)
+    w.rules.push(line => {
+      if (!line.includes('--stat') || line.startsWith('git log')) return undefined
+      if (line.startsWith('git --attr-source=origin/main diff')) return isOld ? { exitCode: 129, stderr: 'unknown option' } : { stdout: ' data.bin | 2 +-' }
+      return { stdout: ' data.bin | Bin 4 -> 4 bytes' }
+    })
+    await start($)
+    await complete($, 'agent-1', answer([]))
+    expect(w.spawns[1]!.prompt).toContain(isOld ? 'data.bin | Bin' : 'data.bin | 2 +-')
   })
 }

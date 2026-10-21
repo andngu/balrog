@@ -265,8 +265,16 @@ const DIFF = ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--text']
 
 const DIFF_CAP = 120_000
 
+// `--text` does not reach a stat, so a stat reads attributes from
+// origin/<base>: a `-diff` the branch adds cannot show its code as "Bin". Git
+// before 2.40 has no --attr-source and reads the branch's.
+async function withBaseAttributes(run: Run, ...args: string[]): Promise<Ran> {
+  const based = await wt(run, `--attr-source=origin/${run.base}`, ...args)
+  return based.ok ? based : wt(run, ...args)
+}
+
 export async function diffStat(run: Run): Promise<string> {
-  const r = await wt(run, ...DIFF, '--stat', `origin/${run.base}...HEAD`)
+  const r = await withBaseAttributes(run, ...DIFF, '--stat', `origin/${run.base}...HEAD`)
   return r.out
 }
 
@@ -421,14 +429,9 @@ async function commitOnce(run: Run, message: string): Promise<Committed> {
 }
 
 // The mod's own commits since the rebased head, as `<sha> <subject>` and a
-// stat each, for the pane and the PR body. `--text` does not reach a stat, so
-// attributes are read from origin/<base>: a `-diff` the branch adds cannot
-// show its code as "Bin". Git before 2.40 has no --attr-source and reads the
-// branch's.
+// stat each, for the pane and the PR body.
 export async function pipelineCommits(run: Run): Promise<string> {
-  const log = ['log', ...DIFF.slice(1), '--no-show-signature', '--format=%h %s', '--stat', `${run.head}..HEAD`]
-  const based = await wt(run, `--attr-source=origin/${run.base}`, ...log)
-  const r = based.ok ? based : await wt(run, ...log)
+  const r = await withBaseAttributes(run, 'log', ...DIFF.slice(1), '--no-show-signature', '--format=%h %s', '--stat', `${run.head}..HEAD`)
   return r.ok ? r.out : ''
 }
 

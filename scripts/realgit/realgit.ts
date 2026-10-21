@@ -293,6 +293,7 @@ await sh(['sh', '-c', 'echo rel > g.txt && git add . && git commit -qm "relative
 
 await import('./round4.ts').then(m => m.round4({ git, judge, isAllowed, stat, sh, out, check, runFor, rebased, root, home, setIdent: (on: boolean) => (ident = on) }))
 await import('./round5.ts').then(m => m.round5({ git, sh, out, check, runFor, rebased, root }))
+await import('./round6.ts').then(m => m.round6({ git, sh, out, check, rebased, root }))
 
 console.log(failures === 0 ? 'ALL OK' : `${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)
