@@ -6,7 +6,7 @@ import { onAgentAnswer, ownerOf, press, resume, startRun, statusReport } from '.
 import { asCall, isAllowed, judge, writtenPath } from './guard'
 import { bind, io } from './io'
 import { registerPane } from './pane'
-import { fromStore, isRetired, knownAgents, PANE, statusText } from './run'
+import { fromStore, isRetired, knownAgents, PANE, statusText, writeOrDrop } from './run'
 import { AGENT_SPECS, FIXER, REVIEWER } from './steps'
 
 // The state library's scan needs each atom written in the file that reads it.
@@ -57,6 +57,7 @@ export const register: Register = on => {
       home: () => $.env.get('HOME'),
       cacheHome: () => $.env.get('XDG_CACHE_HOME'),
       read: path => $.fs.read(path),
+      exists: path => $.fs.exists(path),
       write: (path, text) => $.fs.write(path, text),
       stat: path => $.fs.stat(path, { resolve: true }),
       now: () => $.clock.now(),
@@ -70,7 +71,11 @@ export const register: Register = on => {
       notify: text => $.ui.notify(text),
       invalidate: () => $.ui.invalidate('ui.render'),
       readRun: () => storedRun($),
-      writeRun: change => update($, runAtom, run => change(run && fromStore(run))),
+      writeRun: async change => {
+        const run = await update($, runAtom, run => change(run && fromStore(run)))
+        if (run?.recordDir !== undefined) await writeOrDrop(() => $.fs.write(`${run.recordDir}/latest.json`, JSON.stringify(run)))
+        return run
+      },
       readSelected: () => read($, selectedAtom),
       writeSelected: change => update($, selectedAtom, change),
     })

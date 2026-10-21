@@ -98,7 +98,7 @@ function hashOf(text: string): string {
 // the mod keeps at mode 0700: no other local user can pre-create or swap a
 // path there, and a relative escape from the worktree reaches nothing of the
 // user's repository.
-export async function runDirectory(facts: RepoFacts, runId: string): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
+export async function runDirectory(facts: RepoFacts, runId: string): Promise<{ ok: true; path: string; recordDir: string } | { ok: false; reason: string }> {
   const cache = (await io().cacheHome()) || `${(await io().home()) ?? ''}/.cache`
   if (!cache.startsWith('/')) return { ok: false, reason: 'neither XDG_CACHE_HOME nor HOME names an absolute directory' }
   const root = `${cache.replace(/\/$/, '')}/no-mistakes`
@@ -107,7 +107,8 @@ export async function runDirectory(facts: RepoFacts, runId: string): Promise<{ o
   const closed = await exec(['chmod', '0700', root], '/')
   if (!closed.ok) return { ok: false, reason: `cannot set ${root} to mode 0700: ${closed.err}` }
   const name = facts.repo.split('/').pop() || 'repo'
-  return { ok: true, path: `${root}/${name}-${hashOf(facts.repo)}/${runId}` }
+  const recordDir = `${root}/${name}-${hashOf(facts.repo)}`
+  return { ok: true, path: `${recordDir}/${runId}`, recordDir }
 }
 
 export const worktreeOf = (runDir: string) => `${runDir}/wt`

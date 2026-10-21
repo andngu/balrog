@@ -13,6 +13,7 @@ export type Io = {
   home: () => Promise<string | undefined>
   cacheHome: () => Promise<string | undefined>
   read: (path: string) => Promise<string>
+  exists: (path: string) => Promise<boolean>
   write: (path: string, text: string) => Promise<void>
   stat: (path: string) => Promise<FsStat>
   now: () => Promise<number>

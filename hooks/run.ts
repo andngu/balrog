@@ -25,7 +25,15 @@ export const STEP_ORDER: readonly StepName[] = [
   'ci',
 ]
 
-export type RunSeed = Pick<Run, 'id' | 'repo' | 'branch' | 'base' | 'worktree' | 'gitFile' | 'commonDir' | 'intent' | 'localHead'>
+export async function writeOrDrop(write: () => Promise<void>): Promise<void> {
+  try {
+    await write()
+  } catch {
+    return
+  }
+}
+
+export type RunSeed = Pick<Run, 'id' | 'repo' | 'branch' | 'base' | 'worktree' | 'gitFile' | 'commonDir' | 'intent' | 'localHead' | 'recordDir'>
 
 export function newRun(seed: RunSeed): Run {
   const steps = {} as Record<StepName, StepState>

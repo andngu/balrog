@@ -69,6 +69,8 @@ export type Run = {
   // The worktree HEAD the reviewer was last handed, passed, approved or skipped.
   reviewedHead?: string
   prepared?: true
+  // `<cache>/no-mistakes/<name>-<hash>`, where latest.json and history.jsonl go.
+  recordDir?: string
   // Worktree-relative paths a run agent wrote: the only untracked files the
   // mod commits, so what a command leaves behind stays out.
   written?: string[]

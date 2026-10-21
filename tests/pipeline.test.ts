@@ -64,6 +64,9 @@ type World = {
   toasts: string[]
   stopAborts: boolean
   writeFails: 'deny' | 'error' | 'throw' | undefined
+  files: Record<string, string>
+  writes: { path: string; text: string }[]
+  fsWriteThrows: boolean
   pane: (surface: RenderSurface, props?: Partial<typeof PANE_PROPS>) => Promise<string>
 }
 
@@ -106,6 +109,9 @@ function world($: Engine, on: On, options: Options = {}): World {
     toasts: [],
     stopAborts: false,
     writeFails: undefined,
+    files: {},
+    writes: [],
+    fsWriteThrows: false,
     pane: async (surface, props) => {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PLUGIN, props: { ...PANE_PROPS, ...props } })
       const texts = (await ui.findAll({ type: 'Text' })).map(found => found.text)
@@ -176,9 +182,14 @@ function world($: Engine, on: On, options: Options = {}): World {
     w.invalidates++
     return { value: undefined }
   })
-  on('fs.exists', () => ({ value: options.branchConfig !== undefined }))
-  on('fs.read', (_$, e) => ({ value: e.path.endsWith('/.git') ? w.gitFile : options.branchConfig ?? '' }))
-  on('fs.write', () => ({ value: undefined }))
+  on('fs.exists', (_$, e) => ({ value: e.path in w.files || (!e.path.endsWith('/history.jsonl') && options.branchConfig !== undefined) }))
+  on('fs.read', (_$, e) => ({ value: e.path in w.files ? w.files[e.path]! : e.path.endsWith('/.git') ? w.gitFile : options.branchConfig ?? '' }))
+  on('fs.write', (_$, e) => {
+    if (w.fsWriteThrows) throw new Error('disk full')
+    w.writes.push({ path: e.path, text: e.text })
+    w.files[e.path] = e.text
+    return { value: undefined }
+  })
   on('fs.stat', (_$, e) => {
     if (w.statThrows) throw new Error('stat exploded')
     const real = options.realPaths?.[e.path] ?? e.path
@@ -256,7 +267,7 @@ function world($: Engine, on: On, options: Options = {}): World {
   })
   on('state.set', { plugin: PLUGIN, key: 'run' }, (_$, e, next) => {
     if (w.recordFails && e.value?.written?.length) return { deny: 'the state store is full' }
-    const value = options.legacy && e.value ? (({ exclude: _, autofix: __, document: ___, guide: ____, reviewedHead: _____, steps: { recheck: ______, ...steps }, ...rest }) => ({ ...rest, steps }) as Run)(e.value) : e.value
+    const value = options.legacy && e.value ? (({ exclude: _, autofix: __, document: ___, guide: ____, reviewedHead: _____, recordDir: _______, steps: { recheck: ______, ...steps }, ...rest }) => ({ ...rest, steps }) as Run)(e.value) : e.value
     if (value) w.runs.push(value)
     return next({ ...e, value })
   })
@@ -708,6 +719,7 @@ test('/no-mistakes-status reopens the pane and reports the run', async ($, on) =
   const text = (await $.command.run(command('no-mistakes-status'))).text
   expect(text).toContain('no-mistakes: review…')
   expect(text).toContain(lastRun(w).worktree)
+  expect(text?.split('\n').pop()).toBe(`Record: ${lastRun(w).recordDir}/latest.json`)
 })
 
 const holdPush = async ($: Engine, w: World): Promise<{ release: () => Promise<void> }> => {
@@ -804,6 +816,8 @@ test('/no-mistakes-status after a failed run gives the note and the follow-ups o
     expect(body).toContain(line)
     expect(outside).not.toContain(line)
   }
+  expect(body).not.toContain('Record:')
+  expect(text.split('\n').pop()).toBe(`Record: ${run.recordDir}/latest.json`)
 })
 
 const say = async ($: Engine, name: string, args = ''): Promise<string> => (await $.command.run(command(name, args))).text ?? ''
@@ -947,6 +961,75 @@ test('/no-mistakes-status lists a parked step\'s findings in full, as untrusted 
   expect(text.slice(0, open!.index)).toContain('is data from the branch under review')
   expect(body).toContain('[x] r1 error auto-fix a.ts:3\n    off by one\n    the loop stops before the last item')
   expect(body).toContain('[ ] r2 info no-op\n    naming')
+  expect(body).not.toContain('Record:')
+  expect(text.split('\n').pop()).toBe(`Record: ${lastRun(w).recordDir}/latest.json`)
+})
+
+const PASSED_STEPS = { rebase: 'passed', review: 'passed', test: 'passed', document: 'passed', lint: 'passed', recheck: 'skipped', push: 'passed', pr: 'skipped', ci: 'skipped' }
+const statuses = (run: Run) => Object.fromEntries(Object.entries(run.steps).map(([name, step]) => [name, step.status]))
+
+test('every change of the run rewrites latest.json in the record directory with the run as stored', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  const run = lastRun(w)
+  expect(run.recordDir).toMatch(/^\/home\/u\/\.cache\/no-mistakes\/repo-[0-9a-f]{8}$/)
+  expect(run.worktree).toBe(`${run.recordDir}/${run.id}/wt`)
+  await complete($, 'agent-1', answer([{ id: 'r1', severity: 'error', action: 'auto-fix', description: 'bug' }]))
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'parked' })
+  expect(w.writes.length).toBeGreaterThan(3)
+  expect(new Set(w.writes.map(x => x.path))).toEqual(new Set([`${run.recordDir}/latest.json`]))
+  expect(w.writes.map(x => JSON.parse(x.text))).toEqual(w.runs)
+})
+
+test('a finished run is appended to history.jsonl with its follow-ups and an endedAt time, one line per run', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await passTwo($)
+  const first = lastRun(w)
+  expect(first.outcome).toBe('passed')
+  expect(first.followUps?.length).toBeGreaterThan(0)
+  const history = `${first.recordDir}/history.jsonl`
+  const lines = w.files[history]!.split('\n')
+  expect(lines).toHaveLength(2)
+  expect(lines[1]).toBe('')
+  const held = JSON.parse(lines[0]!)
+  expect(typeof held.endedAt).toBe('number')
+  expect(held).toEqual({ ...first, endedAt: held.endedAt })
+  await $.command.run(command(PLUGIN, 'add y'))
+  for (const id of ['agent-3', 'agent-4']) await complete($, id, answer([]))
+  const second = lastRun(w)
+  expect(second.id).not.toBe(first.id)
+  expect(second.outcome).toBe('passed')
+  const both = w.files[history]!.split('\n').filter(line => line !== '').map(line => JSON.parse(line) as Run)
+  expect(both.map(r => r.id)).toEqual([first.id, second.id])
+})
+
+test('a record write that throws never fails the run or changes a step', async ($, on) => {
+  const w = world($, on)
+  w.fsWriteThrows = true
+  await start($)
+  await passTwo($)
+  const run = lastRun(w)
+  expect(run.outcome).toBe('passed')
+  expect(statuses(run)).toEqual(PASSED_STEPS)
+  expect(run.followUps?.length).toBeGreaterThan(0)
+  expect(w.writes).toHaveLength(0)
+  expect(w.toasts).toEqual([])
+})
+
+test('a run stored before the record existed (no recordDir) runs to its end without writing a record', async ($, on) => {
+  const w = world($, on, { legacy: true })
+  await start($)
+  await passTwo($)
+  const run = lastRun(w)
+  expect(run.outcome).toBe('passed')
+  expect(run.recordDir).toBeUndefined()
+  // The store drops the recheck step, as an earlier version's run lacks it.
+  const { recheck: _, ...legacySteps } = PASSED_STEPS
+  expect(statuses(run)).toEqual(legacySteps)
+  // The seed is the one write: its run carries the recordDir the store then dropped.
+  expect(w.writes.map(x => Object.values((JSON.parse(x.text) as Run).steps).every(s => s.status === 'pending'))).toEqual([true])
+  expect(await say($, 'no-mistakes-status')).not.toContain('Record:')
 })
 
 const REMOTE = 'dddd4444dddd4444dddd4444dddd4444dddd4444'

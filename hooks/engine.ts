@@ -2,7 +2,7 @@ import type { Decision, Finding, FollowUp, Outcome, Run, StepName, StepState, Ve
 import * as git from './git'
 import { io } from './io'
 import { fixPrompt, reaskPrompt, UNTRUSTED_NOTE, untrusted } from './prompts'
-import { AGENT_TIMEOUT_MS, agentOf, autoFixable, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isBlocking, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, report, setStep, skipRest, statusText, timeoutFinding } from './run'
+import { AGENT_TIMEOUT_MS, agentOf, autoFixable, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isBlocking, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, report, setStep, skipRest, statusText, timeoutFinding, writeOrDrop } from './run'
 import { AGENT_STEPS, commitMessage, FIXER, fixed, pollCi, spawn, STEP_DEFS } from './steps'
 import type { StepOutcome } from './steps'
 
@@ -68,7 +68,7 @@ export async function startRun(args: string): Promise<string> {
   const added = await git.addWorktree(facts, git.worktreeOf(dir.path))
   if (!added.ok) return `no-mistakes cannot create its worktree: ${added.reason}`
   const { worktree } = added
-  const run = newRun({ id, repo: facts.repo, branch: facts.branch, base: facts.base, worktree: worktree.path, gitFile: worktree.gitFile, commonDir: worktree.commonDir, intent, localHead: facts.head })
+  const run = newRun({ id, repo: facts.repo, branch: facts.branch, base: facts.base, worktree: worktree.path, gitFile: worktree.gitFile, commonDir: worktree.commonDir, intent, localHead: facts.head, recordDir: dir.recordDir })
   const seeded = await io().writeRun(r => (r && !r.outcome ? r : run))
   if (seeded?.id !== id) {
     await git.removeWorktree(run)
@@ -94,13 +94,14 @@ export async function statusReport(): Promise<string> {
   const run = await io().readRun()
   if (!run) return 'No run yet. Start one with /no-mistakes [intent].'
   const head = `${statusText(run)} (${run.branch}, worktree ${run.worktree})`
+  const record = run.recordDir === undefined ? [] : [`Record: ${run.recordDir}/latest.json`]
   const name = currentStep(run)
   if (run.outcome) {
     const lines = [run.note ?? '', ...(run.followUps ?? []).map(f => (f.command === undefined ? f.text : `${f.text}\n  ${f.command}`))].filter(line => line !== '')
-    return `${head}\nRun ${run.outcome}${name ? ` at ${name}` : ''}. ${UNTRUSTED_NOTE}\n${untrusted('run outcome', lines.join('\n'))}`
+    return [head, `Run ${run.outcome}${name ? ` at ${name}` : ''}. ${UNTRUSTED_NOTE}\n${untrusted('run outcome', lines.join('\n'))}`, ...record].join('\n')
   }
   const state = name === undefined ? undefined : run.steps[name]
-  if (name === undefined || state?.status !== 'parked') return head
+  if (name === undefined || state?.status !== 'parked') return [head, ...record].join('\n')
   const selected = await io().readSelected()
   const left = MAX_FIX_ROUNDS - fixRounds(run, name)
   const findings = state.findings.map(f => `${selected.includes(f.id) ? '[x]' : '[ ]'} ${f.id} ${f.severity} ${f.action}${where(f)}\n${f.description.replace(/^/gm, '    ')}`)
@@ -109,6 +110,7 @@ export async function statusReport(): Promise<string> {
     `Parked at ${name} on ${state.findings.map(f => f.id).join(', ')}; ${left > 0 ? `${left} of ${MAX_FIX_ROUNDS} fix rounds left` : 'no fix rounds left'}. [x] marks a selected finding.`,
     'Decide with /no-mistakes-fix [ids], /no-mistakes-approve, /no-mistakes-skip or /no-mistakes-abort.',
     `${UNTRUSTED_NOTE}\n${untrusted('findings', findings.join('\n'))}`,
+    ...record,
   ].join('\n')
 }
 
@@ -467,7 +469,16 @@ async function finish(outcome: Outcome, note: string): Promise<void> {
     const removed = await git.removeWorktree(run)
     if (!removed.ok) followUps.push({ text: `Could not remove the worktree ${run.worktree}: ${removed.err}` })
   }
-  await io().writeRun(r => (r && r.id === run.id ? { ...r, followUps } : r))
+  const final = await io().writeRun(r => (r && r.id === run.id ? { ...r, followUps } : r))
+  if (final?.recordDir !== undefined) await appendHistory(final.recordDir, { ...final, endedAt: await io().now() })
   await showStatus()
   await io().notify(`run ${outcome}: ${note}`)
+}
+
+async function appendHistory(recordDir: string, line: Run & { endedAt: number }): Promise<void> {
+  const path = `${recordDir}/history.jsonl`
+  await writeOrDrop(async () => {
+    const held = (await io().exists(path)) ? await io().read(path) : ''
+    await io().write(path, `${held}${JSON.stringify(line)}\n`)
+  })
 }
