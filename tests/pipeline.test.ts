@@ -185,7 +185,12 @@ function world($: Engine, on: On, options: Options = {}): World {
     return { value: undefined }
   })
   on('fs.exists', (_$, e) => ({ value: e.path in w.files || (!e.path.endsWith('/history.jsonl') && options.branchConfig !== undefined) }))
-  on('fs.read', (_$, e) => ({ value: e.path in w.files ? w.files[e.path]! : e.path.endsWith('/.git') ? w.gitFile : options.branchConfig ?? '' }))
+  // The host rejects a read of a file that does not exist.
+  on('fs.read', (_$, e) => {
+    if (e.path in w.files) return { value: w.files[e.path]! }
+    if (e.path.endsWith('/.git')) return { value: w.gitFile }
+    throw new Error(`ENOENT: ${e.path}`)
+  })
   on('fs.write', async (_$, e) => {
     if (w.fsWriteThrows) throw new Error('disk full')
     const held = w.holdWrite
@@ -1007,6 +1012,34 @@ test('a finished run is appended to history.jsonl with its follow-ups and an end
   expect(second.outcome).toBe('passed')
   const both = w.files[history]!.split('\n').filter(line => line !== '').map(line => JSON.parse(line) as Run)
   expect(both.map(r => r.id)).toEqual([first.id, second.id])
+})
+
+test('a run started while the last one cleans up leaves the finished run, not itself, in history.jsonl', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  let release!: () => void
+  const held = new Promise<void>(r => { release = r })
+  let removing!: () => void
+  const removal = new Promise<void>(r => { removing = r })
+  w.rules.push(async line => {
+    if (!line.startsWith('git worktree remove')) return undefined
+    removing()
+    await held
+    return undefined
+  })
+  const first = passTwo($)
+  await removal
+  const finished = lastRun(w)
+  expect(finished.outcome).toBe('passed')
+  await $.command.run(command(PLUGIN, 'add y'))
+  expect(lastRun(w).id).not.toBe(finished.id)
+  release()
+  await first
+  const history = `${finished.recordDir}/history.jsonl`
+  const lines = w.files[history]!.split('\n').filter(line => line !== '').map(line => JSON.parse(line) as Run & { endedAt: number })
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toMatchObject({ id: finished.id, outcome: 'passed' })
+  expect(lines[0]!.followUps?.length).toBeGreaterThan(0)
 })
 
 test('a slow record write does not let a later state land in latest.json before an earlier one', async ($, on) => {

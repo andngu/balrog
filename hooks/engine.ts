@@ -469,8 +469,8 @@ async function finish(outcome: Outcome, note: string): Promise<void> {
     const removed = await git.removeWorktree(run)
     if (!removed.ok) followUps.push({ text: `Could not remove the worktree ${run.worktree}: ${removed.err}` })
   }
-  const final = await io().writeRun(r => (r && r.id === run.id ? { ...r, followUps } : r))
-  if (final?.recordDir !== undefined) await appendHistory(final.recordDir, { ...final, endedAt: await io().now() })
+  await io().writeRun(r => (r && r.id === run.id ? { ...r, followUps } : r))
+  if (run.recordDir !== undefined) await appendHistory(run.recordDir, { ...run, followUps, endedAt: await io().now() })
   await showStatus()
   await io().notify(`run ${outcome}: ${note}`)
 }
