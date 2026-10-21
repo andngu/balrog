@@ -393,7 +393,9 @@ export async function commitAll(run: Run, message: string): Promise<Committed> {
   if (run.written?.length) {
     const fresh = await wt(run, '--literal-pathspecs', 'ls-files', '-z', '--others', '--exclude-standard', '--', ...run.written)
     if (!fresh.ok) return { kind: 'error', detail: fresh.err }
-    const paths = fresh.out.split('\0').filter(p => p !== '')
+    // A recorded file that became a directory lists what is under it, which
+    // no agent wrote: only exact entries are added.
+    const paths = fresh.out.split('\0').filter(p => run.written?.includes(p))
     const added = paths.length === 0 ? fresh : await wt(run, '--literal-pathspecs', 'add', '--', ...paths)
     if (!added.ok) return { kind: 'error', detail: added.err }
   }

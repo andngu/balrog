@@ -31,4 +31,20 @@ export async function round5(h: any): Promise<void> {
   }
   await g(seed, 'config', '--unset', 'commit.gpgsign')
   await g(seed, 'config', '--unset', 'gpg.program')
+
+  // A branch that does not conflict, for the commit checks.
+  await sh(['sh', '-c', `git switch -q main && printf '*.lock -diff\\n' > .gitattributes && echo one > pkg.lock && git add . && git commit -qm "lockfile" && git push -q origin main`], seed)
+  await sh(['sh', '-c', `git switch -qc feat3 main && printf '*.bin -diff\\n' >> .gitattributes && echo one > data.bin && git add . && git commit -qm "feat three" && git push -q origin feat3`], seed)
+  const run = await rebased(seed, 'r5-commit')
+  const wt = run.worktree
+  mkdirSync(`${wt}/d`)
+  writeFileSync(`${wt}/d/x.txt`, 'residue\n')
+  writeFileSync(`${wt}/d/y.txt`, 'residue\n')
+  writeFileSync(`${wt}/e.txt`, 'agent\n')
+  writeFileSync(`${wt}/data.bin`, 'two\n')
+  writeFileSync(`${wt}/pkg.lock`, 'two\n')
+  const committed = await git.commitAll({ ...run, written: ['d', 'e.txt'] }, 'fix(no-mistakes/test): make the test check pass')
+  const files = (await out(['git', 'show', '--name-only', '--format=', 'HEAD'], wt)).split('\n').sort()
+  check('R5-4: a recorded path that became a directory commits nothing under it; the exact entry e.txt is committed', committed.kind === 'committed' && JSON.stringify(files) === JSON.stringify(['data.bin', 'e.txt', 'pkg.lock']), JSON.stringify({ committed, files }))
+  await git.removeWorktree(run)
 }
