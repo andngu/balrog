@@ -51,7 +51,7 @@ type World = {
   stopFails: boolean
   status: Record<string, 'running' | 'completed' | 'killed'>
   foreign: Set<number>
-  spawnThrows: boolean
+  spawnThrows: string | undefined
   specs: Record<string, { tools?: readonly string[]; permissionMode?: string }>
   coreCheck: ToolCheckResult
   statThrows: boolean
@@ -61,6 +61,7 @@ type World = {
   recordFails: boolean
   sends: { to: string; text: string }[]
   sendFails: boolean
+  toasts: string[]
   stopAborts: boolean
   writeFails: 'deny' | 'error' | 'throw' | undefined
   pane: (surface: RenderSurface, props?: Partial<typeof PANE_PROPS>) => Promise<string>
@@ -92,7 +93,7 @@ function world($: Engine, on: On, options: Options = {}): World {
     stopFails: false,
     status: {},
     foreign: new Set(),
-    spawnThrows: false,
+    spawnThrows: undefined,
     specs: {},
     coreCheck: { decision: 'ask' },
     statThrows: false,
@@ -102,6 +103,7 @@ function world($: Engine, on: On, options: Options = {}): World {
     recordFails: false,
     sends: [],
     sendFails: false,
+    toasts: [],
     stopAborts: false,
     writeFails: undefined,
     pane: async (surface, props) => {
@@ -161,7 +163,10 @@ function world($: Engine, on: On, options: Options = {}): World {
   on('env.get', (_$, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
   on('tool.check', () => w.coreCheck)
   on('ui.status', () => ({ value: undefined }))
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', (_$, e) => {
+    w.toasts.push(e.text)
+    return { value: undefined }
+  })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.notify', () => {
     w.notifies++
@@ -208,8 +213,8 @@ function world($: Engine, on: On, options: Options = {}): World {
   })
   on('agent.spawn', async (_$, e) => {
     const raw = e as unknown as Record<string, unknown>
-    if (w.spawnThrows && e.description.startsWith('no-mistakes ci fix')) {
-      w.spawnThrows = false
+    if (w.spawnThrows !== undefined && e.description.startsWith(w.spawnThrows)) {
+      w.spawnThrows = undefined
       throw new Error('spawn exploded')
     }
     w.spawns.push({ type: String(raw.subagent_type ?? raw.subagentType), prompt: e.prompt, description: e.description, cwd: e.cwd })
@@ -675,6 +680,102 @@ test('/no-mistakes-status reopens the pane and reports the run', async ($, on) =
   expect(text).toContain(lastRun(w).worktree)
 })
 
+const holdPush = async ($: Engine, w: World): Promise<{ release: () => Promise<void> }> => {
+  let open: (() => void) | undefined
+  let reached: (() => void) | undefined
+  const gate = new Promise<void>(r => { open = r })
+  const pushing = new Promise<void>(r => { reached = r })
+  w.rules.push(async line => (line.startsWith(PUSH) ? (reached!(), await gate, {}) : undefined))
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  const last = complete($, 'agent-2', answer([]))
+  await pushing
+  expect(lastRun(w).steps.push).toMatchObject({ status: 'starting' })
+  return { release: async () => { open!(); await last } }
+}
+
+test('the pane toasts a refused press, and stays quiet on a press that is carried out', async ($, on) => {
+  const w = world($, on)
+  await parkReview($, w)
+  await pressOnce($, 'toggle:r1')
+  await pressOnce($, 'fix')
+  expect(w.toasts).toEqual(['Select at least one finding of review to fix, in the pane or with /no-mistakes-fix <ids>.'])
+  await pressOnce($, 'approve')
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'passed' })
+  expect(w.toasts).toHaveLength(1)
+})
+
+test('the pane toasts that an abort waits for a starting step', async ($, on) => {
+  const w = world($, on)
+  const push = await holdPush($, w)
+  await pressOnce($, 'abort')
+  expect(w.toasts).toEqual(['push is still starting; the run aborts as soon as it settles.'])
+  await push.release()
+  expect(lastRun(w).outcome).toBe('aborted')
+})
+
+test('/no-mistakes-abort while a step is starting says the run aborts once it settles', async ($, on) => {
+  const w = world($, on)
+  const push = await holdPush($, w)
+  expect(await say($, 'no-mistakes-abort')).toBe('push is still starting; the run aborts as soon as it settles.')
+  expect(lastRun(w)).toMatchObject({ abortRequested: true })
+  expect(lastRun(w).outcome).toBeUndefined()
+  await push.release()
+  expect(lastRun(w).outcome).toBe('aborted')
+})
+
+test('a chat approve that loses to a concurrent skip says the step was decided meanwhile and records one decision', async ($, on) => {
+  const w = world($, on)
+  await parkReview($, w)
+  const texts = await Promise.all([say($, 'no-mistakes-approve'), say($, 'no-mistakes-skip')])
+  expect(texts.filter(t => t.startsWith('no-mistakes refused: review was decided meanwhile.'))).toHaveLength(1)
+  expect(lastRun(w).decisions).toHaveLength(1)
+})
+
+test('/no-mistakes-fix once the three fix rounds are spent is refused and spawns nothing', async ($, on) => {
+  const w = world($, on)
+  await parkReview($, w)
+  for (let round = 1; round <= 3; round++) {
+    await pressOnce($, 'fix')
+    await complete($, `agent-${2 * round}`, 'Fixed.')
+    await complete($, `agent-${2 * round + 1}`, answer([{ id: 'r1', severity: 'error', action: 'auto-fix', description: 'bug' }]))
+  }
+  const spawned = w.spawns.length
+  expect(await say($, 'no-mistakes-fix', 'r1')).toBe('no-mistakes refused: review already had 3 fix rounds; approve, skip or abort.')
+  expect(w.spawns).toHaveLength(spawned)
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'parked' })
+})
+
+test('/no-mistakes-fix whose fixer cannot start says it could not send the findings, and the run fails', async ($, on) => {
+  const w = world($, on)
+  await parkReview($, w)
+  w.spawnThrows = 'no-mistakes fix review'
+  expect(await say($, 'no-mistakes-fix', 'r1')).toContain('Could not send r1 of review to the fixer: could not start the fixer:')
+  expect(lastRun(w).outcome).toBe('failed')
+  expect(w.spawns).toHaveLength(1)
+})
+
+test('/no-mistakes-status after a failed run gives the note and the follow-ups only as untrusted data', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  w.listThrows = true
+  await complete($, 'agent-1', answer([]))
+  const run = lastRun(w)
+  expect(run.outcome).toBe('failed')
+  expect(run.followUps?.length).toBeGreaterThan(0)
+  const text = await say($, 'no-mistakes-status')
+  expect(text).toContain('Run failed at document.')
+  const open = /<(untrusted-[a-z0-9]+) source="run outcome">\n/.exec(text)
+  expect(open).not.toBeNull()
+  const close = text.indexOf(`</${open![1]}>`)
+  const body = text.slice(open!.index, close)
+  const outside = text.slice(0, open!.index) + text.slice(close)
+  for (const line of [run.note!, ...(run.followUps ?? []).map(f => f.text)]) {
+    expect(body).toContain(line)
+    expect(outside).not.toContain(line)
+  }
+})
+
 const say = async ($: Engine, name: string, args = ''): Promise<string> => (await $.command.run(command(name, args))).text ?? ''
 
 const THREE = [
@@ -1107,7 +1208,7 @@ test('item 3: an answer in the spawn window is held only for an agent the plugin
 
 test('item 4: a throwing CI fixer spawn fails the step instead of leaving ci claimed', async ($, on) => {
   const w = world($, on, { gh: true })
-  w.spawnThrows = true
+  w.spawnThrows = 'no-mistakes ci fix'
   w.rules.push(line => (line.startsWith('gh pr checks 7') ? { stdout: '[{"name":"build","state":"FAILURE","bucket":"fail"}]' } : undefined), ...PR_RULES)
   await start($)
   await passTwo($)
