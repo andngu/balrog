@@ -343,8 +343,10 @@ function parseConfig(text: string | undefined): Config | { error: string } {
     }
     const top = /^([A-Za-z_]+):(.*)$/.exec(line)
     const known = SECTIONS.find(s => s === top?.[1])
-    // An unindented line under a known section is not an entry of it: it is refused, never dropped.
-    if (section !== undefined && known === undefined) {
+    // An unindented line that looks like an entry of the open section (a list item, a command name, or exclude:) is
+    // misplaced: it is refused, never dropped. Any other top-level key ends the section, as it always has.
+    const misplaced = /^-/.test(line) || (top !== null && (top[1] === 'exclude' || COMMAND_NAMES.some(n => n === top[1])))
+    if (section !== undefined && known === undefined && misplaced) {
       return { error: `cannot read "${line.trim()}" under ${section}: entries must be indented under their section key, and commands: and review: are the only top-level keys read` }
     }
     section = known
