@@ -116,7 +116,9 @@ const review: StepDef = {
   async start(run) {
     const reviewedHead = await git.headOf(run)
     if (reviewedHead === undefined) return failed('cannot read the worktree HEAD')
-    return running(run, REVIEWER, reviewPrompt(run, await git.reviewDiff(run)), 'review', { reviewedHead })
+    const diff = await git.reviewDiff(run)
+    if (!diff.ok) return failed(`cannot read the change to review; fail closed: ${diff.reason}`)
+    return running(run, REVIEWER, reviewPrompt(run, diff.text), 'review', { reviewedHead })
   },
   check: gateAnswer('review'),
 }
@@ -138,16 +140,19 @@ const recheck: StepDef = {
     const head = await git.headOf(run)
     if (head === undefined) return failed('cannot read the worktree HEAD')
     if (head === from) return skipped('no commits since the review')
-    const commits = commitLines(await git.pipelineCommits(run, from)).join('\n')
-    return running(run, REVIEWER, recheckPrompt(run, from, commits, await git.reviewDiff(run, from)), 'recheck')
+    const commits = await git.pipelineCommits(run, from)
+    if (!commits.ok) return failed(`cannot list the pipeline's commits to recheck; fail closed: ${commits.reason}`)
+    const diff = await git.reviewDiff(run, from)
+    if (!diff.ok) return failed(`cannot read the pipeline's commits to recheck; fail closed: ${diff.reason}`)
+    return running(run, REVIEWER, recheckPrompt(run, from, commitLines(commits.text).join('\n'), diff.text), 'recheck')
   },
   check: gateAnswer('recheck'),
 }
 
 // A step that is a configured command: the mod runs it, a failure goes to the
 // fixer, and the re-run after the fixer's commit is the verdict; a fix round
-// repeats this. With no
-// command configured the step parks: nothing ran, so nothing passed.
+// repeats this. With no command configured the step parks: nothing ran, so
+// nothing passed.
 const commandStep = (name: 'test' | 'lint'): StepDef => ({
   name,
   async start(run) {
@@ -188,7 +193,8 @@ const push: StepDef = {
       const committed = await git.commitAll(run, 'style(no-mistakes): format')
       if (committed.kind === 'error') return { ...failed(`format: ${committed.detail}`), patch }
     }
-    const commits = await git.pipelineCommits(run)
+    const listed = await git.pipelineCommits(run)
+    const commits = listed.ok ? listed.text : ''
     const r = await git.push(run)
     if (!r.ok) return { ...failed(`push refused (lease on ${run.remoteHead || 'a new branch'}): ${r.reason}`), patch: { ...patch, commits } }
     const count = commitLines(commits).length
