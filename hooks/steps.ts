@@ -179,6 +179,8 @@ const pr: StepDef = {
   async start(run) {
     const notReady = await git.ghReady(run.repo)
     if (notReady) return { step: { status: 'skipped', reason: notReady } }
+    const target = await git.ghRepo(run)
+    if ('error' in target) return { step: { status: 'skipped', reason: target.error } }
     const existing = await git.prView(run)
     if (existing) return { step: { status: 'passed', note: `existing PR ${existing.url}`, findings: [] }, patch: { prUrl: existing.url, prNumber: existing.number } }
     const stat = await git.diffStat(run)

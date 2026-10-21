@@ -428,28 +428,52 @@ export async function ghReady(cwd: string): Promise<string | undefined> {
   return r.err.includes('not') || r.out.includes('not') || r.err === '' ? 'gh is missing or not authenticated' : r.err.slice(0, 300)
 }
 
+export type GhRepo = { host: string; slug: string; path: string }
+
+// The GitHub repository origin names, which is where the mod pushes. Left to
+// itself gh picks an `upstream` or `github` remote, or its own default, and
+// would open the PR or read CI somewhere else.
+export async function ghRepo(run: Run): Promise<GhRepo | { error: string }> {
+  const r = await git(run.repo, 'remote', 'get-url', 'origin')
+  const m = r.ok ? /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?([^/:]+)(?::\d+)?[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(r.out) : null
+  if (!m) return { error: `origin (${r.ok ? r.out : r.err}) does not name a GitHub repository gh can reach` }
+  const [, host, owner, name] = m as unknown as [string, string, string, string]
+  const path = `${owner}/${name}`
+  return { host, path, slug: host === 'github.com' ? path : `${host}/${path}` }
+}
+
+// A gh call pinned to origin's repository.
+async function ghOn(run: Run, args: string[], stdin?: string): Promise<Ran> {
+  const target = await ghRepo(run)
+  if ('error' in target) return { ok: false, code: -1, out: '', err: target.error }
+  return gh(run.repo, [...args, '--repo', target.slug], stdin)
+}
+
 export type PrRef = { url: string; number: number }
 
+// Only an open PR from origin's own <branch> is the run's: a merged or closed
+// one is history, and a fork's PR of the same branch name is someone else's.
 export async function prView(run: Run): Promise<PrRef | undefined> {
-  const r = await gh(run.repo, ['pr', 'view', run.branch, '--json', 'url,number'])
+  const r = await ghOn(run, ['pr', 'list', '--head', run.branch, '--state', 'open', '--json', 'url,number,isCrossRepository', '--limit', '10'])
   if (!r.ok) return undefined
   try {
-    const v = JSON.parse(r.out) as { url?: unknown; number?: unknown }
-    return typeof v.url === 'string' && typeof v.number === 'number' ? { url: v.url, number: v.number } : undefined
+    const list = JSON.parse(r.out) as { url?: unknown; number?: unknown; isCrossRepository?: unknown }[]
+    const v = Array.isArray(list) ? list.find(p => p.isCrossRepository === false) : undefined
+    return v && typeof v.url === 'string' && typeof v.number === 'number' ? { url: v.url, number: v.number } : undefined
   } catch {
     return undefined
   }
 }
 
 export async function prCreate(run: Run, title: string, body: string): Promise<PrRef | { error: string }> {
-  const r = await gh(run.repo, ['pr', 'create', '--base', run.base, '--head', run.branch, '--title', title, '--body-file', '-'], body)
+  const r = await ghOn(run, ['pr', 'create', '--base', run.base, '--head', run.branch, '--title', title, '--body-file', '-'], body)
   if (!r.ok) return { error: (r.err || r.out).slice(0, 1000) }
   const url = r.out.split('\n').find(line => line.startsWith('https://')) ?? r.out
   return (await prView(run)) ?? { url, number: Number(url.split('/').pop()) || 0 }
 }
 
 export async function prHead(run: Run, number: number): Promise<string | undefined> {
-  const r = await gh(run.repo, ['pr', 'view', String(number), '--json', 'headRefOid'])
+  const r = await ghOn(run, ['pr', 'view', String(number), '--json', 'headRefOid'])
   if (!r.ok) return undefined
   try {
     const v = JSON.parse(r.out) as { headRefOid?: unknown }
@@ -462,7 +486,7 @@ export async function prHead(run: Run, number: number): Promise<string | undefin
 export type Check = { name: string; bucket: string; state: string }
 
 export async function prChecks(run: Run, number: number): Promise<Check[] | { error: string }> {
-  const r = await gh(run.repo, ['pr', 'checks', String(number), '--json', 'name,state,bucket'])
+  const r = await ghOn(run, ['pr', 'checks', String(number), '--json', 'name,state,bucket'])
   if (!r.ok) {
     if (/no checks reported/i.test(r.err + r.out)) return []
     return { error: (r.err || r.out).slice(0, 500) }
@@ -480,19 +504,23 @@ export async function prChecks(run: Run, number: number): Promise<Check[] | { er
 // How many Actions workflows the repository defines; undefined when gh cannot
 // say. Zero is the one signal that no check will ever report.
 export async function workflowCount(run: Run): Promise<number | undefined> {
-  const r = await gh(run.repo, ['api', 'repos/{owner}/{repo}/actions/workflows', '--jq', '.total_count'])
+  const target = await ghRepo(run)
+  if ('error' in target) return undefined
+  const r = await gh(run.repo, ['api', '--hostname', target.host, `repos/${target.path}/actions/workflows`, '--jq', '.total_count'])
   return r.ok && /^\d+$/.test(r.out) ? Number(r.out) : undefined
 }
 
+// The failed log of the pushed head only: a branch's latest failed run may
+// belong to an older head whose failure this head already fixed.
 export async function failedLog(run: Run): Promise<string> {
-  const runs = await gh(run.repo, ['run', 'list', '--branch', run.branch, '--status', 'failure', '--limit', '1', '--json', 'databaseId'])
+  const runs = await ghOn(run, ['run', 'list', '--branch', run.branch, '--status', 'failure', '--limit', '20', '--json', 'databaseId,headSha'])
   let id: number | undefined
   try {
-    id = (JSON.parse(runs.out) as { databaseId?: number }[])[0]?.databaseId
+    id = (JSON.parse(runs.out) as { databaseId?: number; headSha?: string }[]).find(r => r.headSha === run.remoteHead)?.databaseId
   } catch {
     id = undefined
   }
   if (id === undefined) return ''
-  const log = await gh(run.repo, ['run', 'view', String(id), '--log-failed'])
+  const log = await ghOn(run, ['run', 'view', String(id), '--log-failed'])
   return log.out.slice(-6000)
 }
