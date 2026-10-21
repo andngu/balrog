@@ -74,12 +74,13 @@ export const register: Register = on => {
     const stat = (path: string) => $.fs.stat(path, { resolve: true })
     const reason = await judge(call, owner.run.worktree, owner.run.commands, stat)
     if (reason !== undefined) return { deny: `no-mistakes: ${reason}` }
+    // Recorded before the call: a record that fails then refuses the write
+    // (the catch below) instead of leaving a file the commit would not take.
     const written = await writtenPath(call, owner.run.worktree, stat)
-    const result = await next(e)
-    if (written !== undefined && result.deny === undefined && !result.isError) {
+    if (written !== undefined) {
       await update($, runAtom, r => (r && r.id === owner.run.id && !r.written?.includes(written) ? { ...r, written: [...(r.written ?? []), written] } : r))
     }
-    return result
+    return next(e)
   }).catch(($, e, next) => (next.called || e.agentId === undefined || !knownAgents.has(e.agentId) ? next(e) : { deny: 'no-mistakes: the guard failed, so the call is refused' }))
 
   // The allow half: the engine's own verdict comes first and a deny or ask

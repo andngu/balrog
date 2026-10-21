@@ -56,6 +56,8 @@ type World = {
   statThrows: boolean
   completions: string[]
   stdins: Record<string, string>
+  ran: string[]
+  recordFails: boolean
   pane: (surface: RenderSurface) => Promise<string>
 }
 
@@ -90,6 +92,8 @@ function world($: Engine, on: On, options: Options = {}): World {
     statThrows: false,
     completions: [],
     stdins: {},
+    ran: [],
+    recordFails: false,
     pane: async surface => {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
       const texts = (await ui.findAll({ type: 'Text' })).map(found => found.text)
@@ -162,6 +166,7 @@ function world($: Engine, on: On, options: Options = {}): World {
     return { value: { kind: 'file' as const, size: 1, mtimeMs: 0, isLink: real !== e.path, realPath: real } }
   })
   on('tool.call', (_$, e) => {
+    w.ran.push(e.tool)
     if (e.tool === 'TaskStop') {
       const id = String((e as unknown as { task_id?: string }).task_id)
       w.stops.push(id)
@@ -218,6 +223,7 @@ function world($: Engine, on: On, options: Options = {}): World {
     return { value: reply({}) }
   })
   on('state.set', { plugin: PLUGIN, key: 'run' }, (_$, e, next) => {
+    if (w.recordFails && e.value?.written?.length) return { deny: 'the state store is full' }
     if (e.value) w.runs.push(e.value)
     return next(e)
   })
@@ -1581,6 +1587,21 @@ test('R5-3: a timed-out agent is stopped and its edits are committed under its o
   const before = w.calls.length
   await pressOnce($, 'skip')
   expect(w.calls.slice(before).some(c => c.startsWith('git commit'))).toBe(false)
+})
+
+test('R5-6: a write the mod cannot record is refused before it runs, and a recorded one runs once', async ($, on) => {
+  const w = world($, on, { missing: ['new.ts', 'lost.ts'] })
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  const wt = lastRun(w).worktree
+  w.recordFails = true
+  const lost = await toolCall($, 'agent-2', { tool: 'Write', file_path: `${wt}/lost.ts`, content: 'x' })
+  expect(isDenied(lost)).toBe(true)
+  expect(w.ran.filter(t => t === 'Write')).toEqual([])
+  w.recordFails = false
+  expect(isDenied(await toolCall($, 'agent-2', { tool: 'Write', file_path: `${wt}/new.ts`, content: 'x' }))).toBe(false)
+  expect(w.ran.filter(t => t === 'Write')).toEqual(['Write'])
+  expect(lastRun(w).written).toEqual(['new.ts'])
 })
 
 test('R5-5: on a git without --attr-source the commit list falls back to the plain log', async ($, on) => {
