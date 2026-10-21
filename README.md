@@ -63,9 +63,15 @@ commands:
   test: node add.test.mjs  # the test step; no command parks the step
   lint: npm run lint       # the lint step; no command parks the step
   format: prettier -w .    # before the push; its changes become a commit
+review:
+  exclude:                 # left out of the diff and stat the agents see
+    - package-lock.json
+    - "dist/*"
 ```
 
 Each value is one line, plain or quoted (`"..."` reads only `\"` and `\\` escapes). A block (`>-`, `|`), flow (`[...]`, `{...}`), nested or unknown key, or an unclosed quote fails the run at the rebase step with the line it could not read; it never runs as a command.
+
+`review.exclude` keeps generated files, lockfiles and snapshots from filling the reviewer's diff, which is cut at 120,000 characters. Each pattern is a git pathspec with git's default matching, so `*` also matches `/`: `dist/*` covers `dist/a/b.js`. Excluded files are still rebased, tested, pushed and readable by the reviewer, and the reviewer's prompt names the patterns. Only the diff and the stat the agents see leave them out. A branch that changes only excluded files still runs. The list follows the same strict rules as `commands:`: one `- <pattern>` line per item, all at one indent, each a plain or quoted value. A flow list, a scalar, a nested or unknown key, an empty item, or a pattern that starts with `:` or `-` fails the run at the rebase step. A pattern that starts with `*` must be quoted.
 
 ## Trust model
 
