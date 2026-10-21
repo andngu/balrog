@@ -3055,7 +3055,7 @@ test('after a test fix the recheck sends the reviewer the pipeline commit and it
   expect(w.spawns[3]).toMatchObject({ type: `${PLUGIN}:reviewer`, cwd: run.worktree, description: `no-mistakes recheck (${run.id}/0)` })
   const prompt = w.spawns[3]!.prompt
   expect(prompt).toContain('Step "recheck"')
-  expect(prompt).toContain(`The review passed at ${REBASED.slice(0, 12)}`)
+  expect(prompt).toContain(`The review ran at ${REBASED.slice(0, 12)}`)
   expect(prompt).toMatch(/<(untrusted-\w+) source="commits">\ncccc333 fix\(no-mistakes\/test\): make the test check pass\n<\/\1>/)
   expect(prompt).toMatch(/<(untrusted-\w+) source="diff">[\s\S]*\+const fixed = 1[\s\S]*<\/\1>/)
   expect(prompt).not.toContain('+const x = 1')
@@ -3078,14 +3078,21 @@ test('after a review the human approved as is, the recheck reviews the pipeline 
   expect(w.spawns[3]!.prompt).toContain('+const fixed = 1')
 })
 
-test('after a review the human skipped, the recheck is skipped too', async ($, on) => {
+test('after a review the human skipped, the recheck still reviews the pipeline commits made since', async ($, on) => {
   const w = world($, on)
   await toRecheck($, w, 'skip')
   const run = lastRun(w)
-  expect(run.steps.review).toMatchObject({ status: 'skipped' })
-  expect(run.steps.recheck).toMatchObject({ status: 'skipped', reason: 'the review was skipped' })
-  expect(run.steps.push).toMatchObject({ status: 'passed' })
-  expect(w.spawns).toHaveLength(3)
+  expect(run.steps.review).toMatchObject({ status: 'skipped', reason: 'skipped by the human' })
+  expect(run.reviewedHead).toBe(REBASED)
+  expect(run.steps.recheck).toMatchObject({ status: 'running', agentId: 'agent-4' })
+  expect(run.steps.push).toMatchObject({ status: 'pending' })
+  expect(w.spawns[3]).toMatchObject({ type: `${PLUGIN}:reviewer` })
+  expect(w.spawns[3]!.prompt).toContain('+const fixed = 1')
+  await complete($, 'agent-4', answer([C1]))
+  expect(lastRun(w).steps.recheck).toMatchObject({ status: 'parked', findings: [{ id: 'c1' }] })
+  await pressOnce($, 'skip')
+  expect(lastRun(w).steps.recheck).toMatchObject({ status: 'skipped', reason: 'skipped by the human' })
+  expect(lastRun(w).steps.push).toMatchObject({ status: 'passed' })
 })
 
 test('the recheck diff leaves review.exclude out and the reviewer is told which', async ($, on) => {

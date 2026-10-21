@@ -68,7 +68,7 @@ export function reviewPrompt(run: Run, diff: string): string {
 }
 
 export function recheckPrompt(run: Run, reviewedHead: string, commits: string, diff: string): string {
-  return `${header(run)}\n\nStep "recheck". The review passed at ${reviewedHead.slice(0, 12)}. Since then the pipeline's own agents committed to the worktree (the fixer after a failing test or lint command, the document agent, fix rounds), and no reviewer has read those commits:\n${untrusted('commits', commits)}\n\nTheir change, git diff ${reviewedHead.slice(0, 12)}...HEAD with its stat first:${excludedNote(run)}\n${untrusted('diff', diff)}\n\nReview the whole diff against the intent, as adversarially as the review of the branch, and report findings.`
+  return `${header(run)}\n\nStep "recheck". The review ran at ${reviewedHead.slice(0, 12)}. Since then the pipeline's own agents committed to the worktree (the fixer after a failing test or lint command, the document agent, fix rounds), and no reviewer has read those commits:\n${untrusted('commits', commits)}\n\nTheir change, git diff ${reviewedHead.slice(0, 12)}...HEAD with its stat first:${excludedNote(run)}\n${untrusted('diff', diff)}\n\nReview the whole diff against the intent, as adversarially as the review of the branch, and report findings.`
 }
 
 export function documentPrompt(run: Run, stat: string): string {

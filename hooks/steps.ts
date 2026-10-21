@@ -135,8 +135,7 @@ const document: StepDef = {
 const recheck: StepDef = {
   name: 'recheck',
   async start(run) {
-    const from = run.steps.review.status === 'passed' ? run.reviewedHead : undefined
-    if (from === undefined) return skipped('the review was skipped')
+    const from = run.reviewedHead ?? run.head
     const head = await git.headOf(run)
     if (head === undefined) return failed('cannot read the worktree HEAD')
     if (head === from) return skipped('no commits since the review')
