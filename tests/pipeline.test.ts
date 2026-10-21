@@ -855,7 +855,8 @@ test('item 4: a claim nobody settles is failed by the tick after the agent timeo
   const fetching = new Promise<void>(r => { reached = r })
   w.rules.push(async line => (line === FETCH_BASE ? (reached!(), await new Promise<Reply>(() => {})) : undefined))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  void $.command.run(command(PLUGIN, 'add x'))
+  // The fetch never answers, so this call is torn down with the test, rejected.
+  void $.command.run(command(PLUGIN, 'add x')).catch(() => undefined)
   await fetching
   expect(lastRun(w).steps.rebase).toMatchObject({ status: 'starting' })
   await w.clock.advance(31 * 60_000)
