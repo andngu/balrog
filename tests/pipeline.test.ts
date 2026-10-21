@@ -742,6 +742,17 @@ test('/no-mistakes-abort ends the run and removes the worktree; later decisions 
   expect(await say($, 'no-mistakes-status')).toContain('Run aborted at review.')
 })
 
+test('/no-mistakes-approve, skip and abort refuse named findings instead of dropping them', async ($, on) => {
+  const w = world($, on)
+  await parkReview($, w)
+  for (const name of ['no-mistakes-approve', 'no-mistakes-skip', 'no-mistakes-abort']) {
+    expect(await say($, name, 'r1')).toContain(`no-mistakes refused: /${name} takes no arguments, so r1 was not used.`)
+  }
+  expect(lastRun(w).outcome).toBeUndefined()
+  expect(lastRun(w).decisions).toEqual([])
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'parked' })
+})
+
 test('a decision on a step that is not parked is refused with the current step named', async ($, on) => {
   const w = world($, on)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })

@@ -146,7 +146,11 @@ export const register: Register = on => {
 
   for (const { name, verdict } of DECISIONS) {
     on('command.run', { command: name }, async (_$, e) => {
-      const pressed = await press(verdict, e.args.split(/[\s,]+/).filter(id => id !== ''))
+      const named = e.args.split(/[\s,]+/).filter(id => id !== '')
+      // Only fix takes finding ids. The others would drop them without a word,
+      // so an approve or an abort typed with an id is refused, not carried out.
+      if (verdict !== 'fix' && named.length > 0) return { text: `no-mistakes refused: /${name} takes no arguments, so ${named.join(', ')} was not used. Select findings in the pane, or use /no-mistakes-fix <ids>.` }
+      const pressed = await press(verdict, named)
       return { text: pressed.kind === 'refused' ? `no-mistakes refused: ${pressed.reason}` : pressed.text }
     })
   }
