@@ -1657,6 +1657,8 @@ const BAD_CONFIGS = [
   ['commands:\n  test:\n    run: npm test\n', 'nested'],
   ['commands:\n  tset: npm test\n', 'not one of'],
   ['commands: {test: npm test}\n', 'one entry per line'],
+  ['commands:\n- test: npm test\n', 'cannot read "- test: npm test" under commands:'],
+  ['commands:\ntest: npm test\n', 'cannot read "test: npm test" under commands:'],
 ] as const
 
 for (const [config, why] of BAD_CONFIGS) {
@@ -2175,6 +2177,9 @@ const BAD_REVIEW_CONFIGS = [
   ['review:\n  exclude:\n    - *.lock\n', 'block, flow'],
   ['review:\n  exclude:\n    - "a\n', 'not closed'],
   ['review: [a]\n', 'review: must be followed by one entry per line'],
+  ['review:\n- package-lock.json\n', 'cannot read "- package-lock.json" under review:'],
+  ['review:\n  exclude:\n    - a\n- b\n', 'cannot read "- b" under review:'],
+  ['review:\nexclude:\n  - a\n', 'cannot read "exclude:" under review:'],
 ] as const
 
 for (const [config, why] of BAD_REVIEW_CONFIGS) {

@@ -334,17 +334,21 @@ const SECTIONS = ['commands', 'review'] as const
 
 function parseConfig(text: string | undefined): Config | { error: string } {
   const body: Record<(typeof SECTIONS)[number], string[]> = { commands: [], review: [] }
-  let lines: string[] | undefined
+  let section: (typeof SECTIONS)[number] | undefined
   for (const line of (text ?? '').split('\n').map(l => l.replace(/\s+$/, ''))) {
     if (/^\s*(#.*)?$/.test(line)) continue
     if (/^\s/.test(line)) {
-      lines?.push(line)
+      if (section !== undefined) body[section].push(line)
       continue
     }
     const top = /^([A-Za-z_]+):(.*)$/.exec(line)
-    const section = SECTIONS.find(s => s === top?.[1])
-    lines = section === undefined ? undefined : body[section]
-    if (section !== undefined && !/^(\s+#.*)?$/.test(top?.[2] ?? '')) return { error: `${section}: must be followed by one entry per line` }
+    const known = SECTIONS.find(s => s === top?.[1])
+    // An unindented line under a known section is not an entry of it: it is refused, never dropped.
+    if (section !== undefined && known === undefined) {
+      return { error: `cannot read "${line.trim()}" under ${section}: entries must be indented under their section key, and commands: and review: are the only top-level keys read` }
+    }
+    section = known
+    if (known !== undefined && !/^(\s+#.*)?$/.test(top?.[2] ?? '')) return { error: `${known}: must be followed by one entry per line` }
   }
   const commands = readCommands(body.commands)
   if ('error' in commands) return commands
