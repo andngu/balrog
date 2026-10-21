@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Check scripts/dogfood.sh record and wait against a fake cache directory, with tmux and claude
-# replaced by stubs. Run from anywhere: scripts/dogfood-check.sh. Exits 1 when a check failed.
+# Check scripts/dogfood.sh start, record and wait against a fake cache directory, with tmux, claude
+# and git clone replaced by stubs. Run from anywhere: scripts/dogfood-check.sh. Exits 1 when a check failed.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -9,11 +9,23 @@ trap 'rm -rf "$tmp"' EXIT
 tmp=$(cd "$tmp" && pwd -P)
 
 mkdir -p "$tmp/bin" "$tmp/jq"
-for tool in bash git dirname touch sed grep tail sleep; do ln -s "$(command -v "$tool")" "$tmp/bin/$tool"; done
+for tool in bash dirname touch sed grep tail sleep mkdir mktemp mv rmdir seq; do ln -s "$(command -v "$tool")" "$tmp/bin/$tool"; done
 ln -s "$(command -v jq)" "$tmp/jq/jq"
-printf '#!/bin/sh\nexit 0\n' >"$tmp/bin/tmux"
+cat >"$tmp/bin/tmux" <<'EOF'
+#!/bin/sh
+case "$1" in
+  has-session) [ -z "$NO_SESSION" ] ;;
+  capture-pane) echo "❯ " ;;
+esac
+EOF
 printf '#!/bin/sh\nexit 0\n' >"$tmp/bin/claude"
-chmod +x "$tmp/bin/tmux" "$tmp/bin/claude"
+cat >"$tmp/bin/git" <<EOF
+#!/bin/sh
+[ "\$1" = clone ] || exec $(command -v git) "\$@"
+for arg; do dest=\$arg; done
+mkdir -p "\$dest/.git"
+EOF
+chmod +x "$tmp/bin/tmux" "$tmp/bin/claude" "$tmp/bin/git"
 
 export XDG_CACHE_HOME=$tmp/cache
 branch=dogfood-check
@@ -45,7 +57,7 @@ check() {
   else
     echo "FAIL $name: exit $status, output: $out" >&2
     echo "     wanted exit $want_status, output: $want_out" >&2
-    stat -c '     %.9y %n' "$clone/.git/HEAD" "$clone/.git/dogfood-mark" "$records"/*/latest.json >&2 2>/dev/null || true
+    stat -c '     %y %n' "$clone/.git/HEAD" "$clone/.git/dogfood-mark" "$records"/*/latest.json >&2 2>/dev/null || true
     fails=1
   fi
 }
@@ -58,7 +70,8 @@ check 'wait refuses a limit that is not a number' 1 'dogfood: wait takes a numbe
 write "$records/repo-aaaaaaaa/latest.json" run1 "$parked" null
 check 'a parked step prints its name and finding ids, exit 1' 1 'parked at review: f1, f2' dogfood wait "$branch" 0
 check 'record prints the record' 0 "$(jq . "$records/repo-aaaaaaaa/latest.json")" dogfood record "$branch"
-check 'record and wait die without jq' 1 'dogfood: jq is not on PATH' env PATH="$tmp/bin" "$here/dogfood.sh" wait "$branch" 0
+check 'record dies without jq' 1 'dogfood: jq is not on PATH' env PATH="$tmp/bin" "$here/dogfood.sh" record "$branch"
+check 'wait dies without jq' 1 'dogfood: jq is not on PATH' env PATH="$tmp/bin" "$here/dogfood.sh" wait "$branch" 0
 
 write "$records/repo-aaaaaaaa/latest.json" run1 "$passed" '"passed"'
 check 'a passed run prints its note, exit 0' 0 'run passed: note of run1' dogfood wait "$branch" 0
@@ -104,5 +117,9 @@ wait
 
 ln -s "$tmp/cache" "$tmp/link"
 check 'the clone path is resolved before it is compared with the record' 0 'run passed: note of run4' env XDG_CACHE_HOME="$tmp/link" PATH="$tmp/bin:$tmp/jq" "$here/dogfood.sh" wait "$branch" 0
+
+fresh=$tmp/cache/no-mistakes-dogfood/dogfood-start
+check 'start opens the session in a new clone' 0 "session nm-dogfood-start in $fresh" env NO_SESSION=1 PATH="$tmp/bin:$tmp/jq" "$here/dogfood.sh" start dogfood-start
+check 'start leaves the mark that wait reads records against' 0 '' test -e "$fresh/.git/dogfood-mark"
 
 exit "$fails"
