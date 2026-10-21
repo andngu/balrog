@@ -2530,6 +2530,8 @@ test('under autofix, a review that parks on auto-fix findings alone goes to the 
   expect(w.spawns[1]!.prompt).toContain('The pipeline chose to fix these findings')
   expect(w.spawns[1]!.prompt).toContain('off by one')
   expect(w.spawns[1]!.prompt).not.toContain('comment style')
+  for (const surface of SURFACES) expect(await w.pane(surface)).toContain('▸ review   auto-fixing (fix round 1)')
+  expect((await $.command.run(command('no-mistakes-status'))).text).toContain('no-mistakes: auto-fixing review (round 1)')
 
   w.dirty = true
   w.worktreeHead = FIXED
@@ -2586,6 +2588,13 @@ test('with autofix: false, an auto-fix finding parks the step as it does with no
   expect(lastRun(w).steps.review).toMatchObject({ status: 'parked' })
   expect(lastRun(w).decisions).toEqual([])
   expect(w.spawns).toHaveLength(1)
+  await pressOnce($, 'fix')
+  expect(lastRun(w).decisions).toEqual([{ step: 'review', findingIds: ['r1'], verdict: 'fix' }])
+  expect(w.spawns[1]!.prompt).toContain('The human chose to fix these findings')
+  const drawn = await w.pane('terminal')
+  expect(drawn).toContain('▸ review   fix round 1')
+  expect(drawn).not.toContain('auto-fixing')
+  expect((await $.command.run(command('no-mistakes-status'))).text).toContain('no-mistakes: fixing review (round 1)')
 })
 
 test('a run stored before autofix existed (no autofix field) parks as before, whatever the config says', async ($, on) => {

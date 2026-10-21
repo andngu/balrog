@@ -206,7 +206,7 @@ export function statusText(run: Run | null): string | undefined {
   if (!name) return `${PLUGIN}: finishing`
   const state = run.steps[name]
   if (state.status === 'parked') return `${PLUGIN}: parked at ${name}`
-  if (state.status === 'fixing') return `${PLUGIN}: fixing ${name} (round ${state.round})`
+  if (state.status === 'fixing') return `${PLUGIN}: ${isAutoRound(run, name) ? 'auto-fixing' : 'fixing'} ${name} (round ${state.round})`
   return `${PLUGIN}: ${name}…`
 }
 
