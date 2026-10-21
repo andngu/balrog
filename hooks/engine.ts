@@ -3,7 +3,7 @@ import * as git from './git'
 import { io } from './io'
 import { fixPrompt, reaskPrompt, UNTRUSTED_NOTE, untrusted } from './prompts'
 import { AGENT_TIMEOUT_MS, agentOf, autoFixable, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isBlocking, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, report, setStep, skipRest, statusText, timeoutFinding } from './run'
-import { AGENT_STEPS, commitMessage, FIXER, pollCi, spawn, STEP_DEFS } from './steps'
+import { AGENT_STEPS, commitMessage, FIXER, fixed, pollCi, spawn, STEP_DEFS } from './steps'
 import type { StepOutcome } from './steps'
 
 let pollTimer: { cancel: () => void } | undefined
@@ -115,6 +115,7 @@ export async function statusReport(): Promise<string> {
 function apply(run: Run, name: StepName, outcome: StepOutcome): Run {
   let next = outcome.decision ? decide(run, outcome.decision) : run
   next = setStep({ ...next, ...outcome.patch }, name, outcome.step)
+  for (const step of outcome.reopen ?? []) next = setStep(next, step, { status: 'pending' })
   if (outcome.skipRest) next = skipRest(next, name, outcome.skipRest)
   return next
 }
@@ -252,7 +253,7 @@ export async function onAgentAnswer(agentId: string, answer: string, reason: str
     return reask(name, agentId, parsed.error)
   } else {
     try {
-      outcome = state.status === 'fixing' ? { step: { status: 'pending' } } : await STEP_DEFS[name].check(run, answer)
+      outcome = state.status === 'fixing' ? fixed(run, name) : await STEP_DEFS[name].check(run, answer)
     } catch (e) {
       outcome = { step: { status: 'failed', reason: `${name} could not check the answer: ${String(e)}` } }
     }

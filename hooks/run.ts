@@ -62,6 +62,10 @@ export function decide(run: Run, decision: Decision): Run {
   return { ...run, decisions: [...run.decisions, decision] }
 }
 
+export function approvedOrSkipped(run: Run, step: StepName): boolean {
+  return run.decisions.some(d => d.step === step && d.verdict !== 'fix')
+}
+
 export function fixRounds(run: Run, step: StepName): number {
   return run.decisions.filter(d => d.step === step && d.verdict === 'fix').length
 }

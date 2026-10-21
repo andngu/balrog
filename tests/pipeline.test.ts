@@ -3006,11 +3006,13 @@ for (const config of ['review:\n  exclude:\n    - a.lock\ndocument: false\nautof
 const RECHECK_DIFF = `git diff --no-ext-diff --no-textconv --no-color --text ${REBASED}...HEAD`
 const RECHECK_LOG = `git --attr-source=origin/main log --no-ext-diff --no-textconv --no-color --text --no-show-signature --format=%h %s --stat ${REBASED}..HEAD`
 const FIXED_AGAIN = 'dddd4444dddd4444dddd4444dddd4444dddd4444'
+const FIXED_THRICE = 'eeee5555eeee5555eeee5555eeee5555eeee5555'
 const C1 = { id: 'c1', severity: 'error', action: 'auto-fix', file: 'a.ts', line: 2, description: 'the fix breaks the empty case' } as const
 
 const PIPELINE_LOG: Record<string, string> = {
   [FIXED]: 'cccc333 fix(no-mistakes/test): make the test check pass\n a.ts | 2 +-',
   [FIXED_AGAIN]: 'dddd444 fix(no-mistakes/recheck): fix round 1\n a.ts | 1 +\ncccc333 fix(no-mistakes/test): make the test check pass\n a.ts | 2 +-',
+  [FIXED_THRICE]: 'eeee555 fix(no-mistakes/test): make the test check pass\n a.ts | 1 +\ndddd444 fix(no-mistakes/recheck): fix round 1\n a.ts | 1 +\ncccc333 fix(no-mistakes/test): make the test check pass\n a.ts | 2 +-',
 }
 
 // A run at the recheck with one pipeline commit, the test fixer's; the recheck's reviewer is agent-4.
@@ -3210,4 +3212,78 @@ test('the recheck fails closed when the pipeline\'s commits cannot be listed', a
   expect(run.outcome).toBe('failed')
   expect(w.spawns).toHaveLength(3)
   expect(w.calls.some(c => c.startsWith('git push'))).toBe(false)
+})
+
+test('a recheck fix round runs the test and lint commands again on the round\'s commit, and a failing re-run goes to the fixer, before the recheck reads them', async ($, on) => {
+  const w = world($, on)
+  let failAgain = false
+  w.rules.push(line => (failAgain && line === 'sh -c npm test' ? { exitCode: 1, stdout: '2 failing' } : undefined))
+  await toRecheck($, w)
+  await complete($, 'agent-4', answer([C1]))
+  await pressOnce($, 'fix')
+  expect(w.calls.filter(c => c === 'sh -c npm test')).toHaveLength(2)
+  expect(w.calls.filter(c => c === 'sh -c npm run lint')).toHaveLength(1)
+  failAgain = true
+  w.dirty = true
+  w.worktreeHead = FIXED_AGAIN
+  await complete($, 'agent-5', 'Fixed.')
+  let run = lastRun(w)
+  expect(run.steps.recheck).toMatchObject({ status: 'pending' })
+  expect(run.steps.test).toMatchObject({ status: 'running', agentId: 'agent-6' })
+  expect(run.steps.document).toMatchObject({ status: 'passed' })
+  expect(w.calls.filter(c => c === 'sh -c npm test')).toHaveLength(3)
+  expect(w.spawns[5]).toMatchObject({ type: `${PLUGIN}:fixer`, description: `no-mistakes test (${run.id}/1)` })
+  expect(w.spawns[5]!.prompt).toContain('2 failing')
+  expect(await w.pane('terminal')).toContain('▸ test     fixer working')
+  failAgain = false
+  w.dirty = true
+  w.worktreeHead = FIXED_THRICE
+  await complete($, 'agent-6', answer([]))
+  run = lastRun(w)
+  expect(w.calls).toContain('git commit -q -m fix(no-mistakes/test): make the test check pass')
+  expect(run.steps.test).toMatchObject({ status: 'passed', note: 'npm test exited 0' })
+  expect(run.steps.lint).toMatchObject({ status: 'passed' })
+  expect(w.calls.filter(c => c === 'sh -c npm test')).toHaveLength(4)
+  expect(w.calls.filter(c => c === 'sh -c npm run lint')).toHaveLength(2)
+  expect(run.steps.recheck).toMatchObject({ status: 'running', agentId: 'agent-7' })
+  expect(w.spawns[6]).toMatchObject({ type: `${PLUGIN}:reviewer` })
+  expect(w.spawns[6]!.prompt).toMatch(/<(untrusted-\w+) source="commits">\neeee555 fix\(no-mistakes\/test\): make the test check pass\ndddd444 fix\(no-mistakes\/recheck\): fix round 1\ncccc333 fix\(no-mistakes\/test\): make the test check pass\n<\/\1>/)
+  expect(run.decisions).toEqual([{ step: 'recheck', findingIds: ['c1'], verdict: 'fix' }])
+  await complete($, 'agent-7', answer([]))
+  expect(lastRun(w).steps.recheck).toMatchObject({ status: 'passed' })
+  expect(w.calls).toContain(`${PUSH} ${FIXED_THRICE}:refs/heads/feat --force-with-lease=refs/heads/feat:`)
+  expect(lastRun(w).outcome).toBe('passed')
+})
+
+test('a recheck fix round leaves a test step the human approved as it is, and runs lint again', async ($, on) => {
+  const w = world($, on, { config: 'commands:\n  lint: npm run lint\n' })
+  let failing = true
+  w.rules.push(line => (line === 'sh -c npm run lint' ? { exitCode: failing ? 1 : 0, stdout: failing ? '1 problem' : '' } : undefined))
+  w.rules.push(line => (line === RECHECK_LOG ? { stdout: PIPELINE_LOG[w.worktreeHead] ?? '' } : undefined))
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  expect(lastRun(w).steps.test).toMatchObject({ status: 'parked', findings: [{ id: 'test:no-command' }] })
+  await pressOnce($, 'approve')
+  await complete($, 'agent-2', answer([]))
+  expect(lastRun(w).steps.lint).toMatchObject({ status: 'running', agentId: 'agent-3' })
+  failing = false
+  w.dirty = true
+  w.worktreeHead = FIXED
+  await complete($, 'agent-3', answer([]))
+  expect(lastRun(w).steps.recheck).toMatchObject({ status: 'running', agentId: 'agent-4' })
+  await complete($, 'agent-4', answer([C1]))
+  await pressOnce($, 'fix')
+  w.dirty = true
+  w.worktreeHead = FIXED_AGAIN
+  await complete($, 'agent-5', 'Fixed.')
+  const run = lastRun(w)
+  expect(run.steps.test).toMatchObject({ status: 'passed', note: 'approved by the human' })
+  expect(w.calls.filter(c => c === 'sh -c npm run lint')).toHaveLength(3)
+  expect(run.steps.lint).toMatchObject({ status: 'passed' })
+  expect(run.steps.recheck).toMatchObject({ status: 'running', agentId: 'agent-6' })
+  expect(w.spawns[5]).toMatchObject({ type: `${PLUGIN}:reviewer` })
+  expect(run.decisions).toEqual([
+    { step: 'test', findingIds: ['test:no-command'], verdict: 'approve' },
+    { step: 'recheck', findingIds: ['c1'], verdict: 'fix' },
+  ])
 })

@@ -2,7 +2,7 @@ import type { Decision, Finding, Run, StepName, StepState } from '../types'
 import * as git from './git'
 import { io } from './io'
 import { ciFixPrompt, commandPrompt, documentPrompt, FIXER_SYSTEM, prBodyPrompt, recheckPrompt, reviewPrompt, REVIEWER_SYSTEM } from './prompts'
-import { CI_GRACE_MS, CI_QUIET_MS, CI_TIMEOUT_MS, commitLines, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN, slug } from './run'
+import { approvedOrSkipped, CI_GRACE_MS, CI_QUIET_MS, CI_TIMEOUT_MS, commitLines, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN, slug } from './run'
 
 export const REVIEWER = `${PLUGIN}:reviewer`
 export const FIXER = `${PLUGIN}:fixer`
@@ -32,13 +32,17 @@ export const AGENT_SPECS = [
 // The steps whose start may spawn an agent; every step's fix round does.
 export const AGENT_STEPS: ReadonlySet<StepName> = new Set<StepName>(['review', 'test', 'document', 'lint', 'recheck'])
 
-export type StepOutcome = { step: StepState; patch?: Partial<Run>; decision?: Decision; skipRest?: string }
+export type StepOutcome = { step: StepState; patch?: Partial<Run>; decision?: Decision; skipRest?: string; reopen?: readonly StepName[] }
 
 export type StepDef = {
   name: StepName
   start: (run: Run) => Promise<StepOutcome>
   check: (run: Run, answer: string) => Promise<StepOutcome>
+  // Steps that run again once a fix round of this step ends, before it does.
+  reopens?: readonly StepName[]
 }
+
+export const fixed = (run: Run, name: StepName): StepOutcome => ({ step: { status: 'pending' }, reopen: (STEP_DEFS[name].reopens ?? []).filter(step => !approvedOrSkipped(run, step)) })
 
 // The message of the commit the mod makes from an agent's edits.
 export function commitMessage(name: StepName, state: StepState): string {
@@ -146,6 +150,7 @@ const recheck: StepDef = {
     return running(run, REVIEWER, recheckPrompt(run, from, commitLines(commits.text).join('\n'), diff.text), 'recheck')
   },
   check: gateAnswer('recheck'),
+  reopens: ['test', 'lint'],
 }
 
 // A step that is a configured command: the mod runs it, a failure goes to the
