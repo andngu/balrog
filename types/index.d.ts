@@ -40,7 +40,9 @@ export type Commands = Partial<Record<CommandName, string>>
 
 // `review.exclude` of .no-mistakes.yaml, read the same way from origin/<base>:
 // git pathspecs left out of the diff and stat the agents see.
-export type Config = { commands: Commands; exclude: string[]; autofix: boolean; document: boolean }
+export type Config = { commands: Commands; exclude: string[]; autofix: boolean; document: boolean; guide?: string }
+
+export type Guide = { path: string; text: string }
 
 export type FollowUp = { text: string; command?: string }
 
@@ -63,6 +65,7 @@ export type Run = {
   exclude: string[]
   autofix: boolean
   document: boolean
+  guide?: Guide
   prepared?: true
   // Worktree-relative paths a run agent wrote: the only untracked files the
   // mod commits, so what a command leaves behind stays out.

@@ -59,8 +59,12 @@ function excludedNote(run: Run): string {
   return run.exclude.length === 0 ? '' : `\nLeft out of this diff by review.exclude in .no-mistakes.yaml (the files still change; Read them when the review needs them): ${run.exclude.join(', ')}`
 }
 
+function trustedGuideBlock(run: Run): string {
+  return run.guide === undefined ? '' : `\n\nReview guide, ${run.guide.path} on origin/${run.base}. Apply it as the standards of the author's team; the author's intent and the recorded decisions still outrank it:\n${run.guide.text}`
+}
+
 export function reviewPrompt(run: Run, diff: string): string {
-  return `${header(run)}\n\nThe change under review, git diff origin/${run.base}...HEAD with its stat first:${excludedNote(run)}\n${untrusted('diff', diff)}\n\nReview the whole diff against the intent and report findings.`
+  return `${header(run)}${trustedGuideBlock(run)}\n\nThe change under review, git diff origin/${run.base}...HEAD with its stat first:${excludedNote(run)}\n${untrusted('diff', diff)}\n\nReview the whole diff against the intent and report findings.`
 }
 
 export function documentPrompt(run: Run, stat: string): string {

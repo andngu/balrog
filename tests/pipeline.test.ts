@@ -256,7 +256,7 @@ function world($: Engine, on: On, options: Options = {}): World {
   })
   on('state.set', { plugin: PLUGIN, key: 'run' }, (_$, e, next) => {
     if (w.recordFails && e.value?.written?.length) return { deny: 'the state store is full' }
-    const value = options.legacy && e.value ? (({ exclude: _, autofix: __, document: ___, ...rest }) => rest as Run)(e.value) : e.value
+    const value = options.legacy && e.value ? (({ exclude: _, autofix: __, document: ___, guide: ____, ...rest }) => rest as Run)(e.value) : e.value
     if (value) w.runs.push(value)
     return next({ ...e, value })
   })
@@ -2435,7 +2435,7 @@ test('a review.exclude item keeps a quoted # and drops a plain comment, and may 
 })
 
 const BAD_REVIEW_CONFIGS = [
-  ['review:\n  include:\n    - a\n', 'review.include is not read'],
+  ['review:\n  include:\n    - a\n', 'review.include is not read; review: holds only exclude: and guide:'],
   ['review:\n  exclude: [a, b]\n', 'one "- <pattern>" line per pattern'],
   ['review:\n  exclude: a\n', 'one "- <pattern>" line per pattern'],
   ['review:\n  exclude:\n    a: b\n', 'cannot read "a: b" under review:'],
@@ -2453,6 +2453,16 @@ const BAD_REVIEW_CONFIGS = [
   ['review:\n- package-lock.json\n', 'cannot read "- package-lock.json" under review:'],
   ['review:\n  exclude:\n    - a\n- b\n', 'cannot read "- b" under review:'],
   ['review:\nexclude:\n  - a\n', 'cannot read "exclude:" under review:'],
+  ['review:\nguide: REVIEW.md\n', 'cannot read "guide: REVIEW.md" under review:'],
+  ['review:\n  guide: /etc/REVIEW.md\n', 'must be a path from the repository root'],
+  ['review:\n  guide: ../REVIEW.md\n', 'must be a path from the repository root'],
+  ['review:\n  guide: docs/./REVIEW.md\n', 'must be a path from the repository root'],
+  ['review:\n  guide: docs/\n', 'must be a path from the repository root'],
+  ['review:\n  guide: [a]\n', 'block, flow'],
+  ['review:\n  guide:REVIEW.md\n', 'review.guide: must be followed by a space and a path'],
+  ['review:\n  guide: a.md\n  guide: b.md\n', 'review.guide is set twice'],
+  ['review:\n  guide:\n    - a.md\n', 'cannot read "- a.md" under review:'],
+  ['review:\n  exclude:\n    - a\n  guide: a.md\n    - b\n', 'cannot read "- b" under review:'],
 ] as const
 
 for (const [config, why] of BAD_REVIEW_CONFIGS) {
@@ -2501,6 +2511,175 @@ test('a run stored before review.exclude existed survives a Fix press and the ne
   expect(run.steps.test).toMatchObject({ status: 'passed' })
   expect(run.steps.document).toMatchObject({ status: 'running', agentId: 'agent-4' })
   expect(w.calls.some(c => c.includes(':(exclude)'))).toBe(false)
+})
+
+const GUIDE_TEXT = 'Every migration has a down migration.'
+const GUIDE = `${CONFIG}review:\n  guide: docs/REVIEW.md\n`
+const GUIDE_SHA = 'eeee5555eeee5555eeee5555eeee5555eeee5555'
+const LS_GUIDE = 'git --literal-pathspecs ls-tree -z --full-tree origin/main -- docs/REVIEW.md'
+const entryOf = (mode: string, kind: string, sha: string, path = 'docs/REVIEW.md') => ({ stdout: `${mode} ${kind} ${sha}\t${path}\0` })
+const showGuide = (text: string) => (line: string) =>
+  line === LS_GUIDE ? entryOf('100644', 'blob', GUIDE_SHA) : line === `git cat-file blob ${GUIDE_SHA}` ? { stdout: text } : undefined
+
+test('review.guide puts the file from origin/<base> in the reviewer\'s prompt, path and text, before the diff', async ($, on) => {
+  const w = world($, on, { config: GUIDE })
+  w.rules.push(showGuide(GUIDE_TEXT))
+  await start($)
+  expect(lastRun(w).guide).toEqual({ path: 'docs/REVIEW.md', text: GUIDE_TEXT })
+  const prompt = w.spawns[0]!.prompt
+  expect(outside(prompt)).toContain(`docs/REVIEW.md on origin/main. Apply it as the standards of the author's team; the author's intent and the recorded decisions still outrank it:\n${GUIDE_TEXT}`)
+  expect(prompt.indexOf(GUIDE_TEXT)).toBeLessThan(prompt.indexOf('+const x = 1'))
+})
+
+test('only the reviewer gets the guide: the fixer and the document agent do not, and the review after a fix round does', async ($, on) => {
+  const w = world($, on, { config: GUIDE })
+  w.rules.push(showGuide(GUIDE_TEXT))
+  await start($)
+  await complete($, 'agent-1', answer([{ id: 'r1', severity: 'error', action: 'auto-fix', description: 'off by one' }]))
+  await pressOnce($, 'fix')
+  w.dirty = true
+  w.worktreeHead = FIXED
+  await complete($, 'agent-2', 'Fixed.')
+  await complete($, 'agent-3', answer([]))
+  expect(lastRun(w).steps.document).toMatchObject({ status: 'running', agentId: 'agent-4' })
+  expect(w.spawns.map(s => s.prompt.includes(GUIDE_TEXT))).toEqual([true, false, true, false])
+})
+
+test('the test fixer, the PR body writer and the CI fixer never get the guide', async ($, on) => {
+  const w = world($, on, { config: GUIDE, gh: true })
+  let tests = 0
+  w.rules.push(
+    showGuide(GUIDE_TEXT),
+    line => (line === 'sh -c npm test' && ++tests === 1 ? { exitCode: 1, stdout: '1 failing' } : undefined),
+    line => (line.startsWith('gh pr checks 7') ? { stdout: '[{"name":"build","state":"FAILURE","bucket":"fail"}]' } : undefined),
+  )
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  expect(lastRun(w).steps.test).toMatchObject({ status: 'running', agentId: 'agent-2' })
+  await complete($, 'agent-2', answer([]))
+  await complete($, 'agent-3', answer([]))
+  await w.clock.advance(30_000)
+  expect(lastRun(w).steps.ci).toMatchObject({ status: 'fixing', agentId: 'agent-4' })
+  expect(w.spawns.map(s => s.prompt.includes(GUIDE_TEXT))).toEqual([true, false, false, false])
+  expect(w.completions).toHaveLength(1)
+  expect(w.completions[0]).not.toContain(GUIDE_TEXT)
+})
+
+test('with no review.guide the reviewer\'s prompt has no guide block and no other file is read from the base', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  expect(lastRun(w).guide).toBeUndefined()
+  expect(w.spawns[0]!.prompt).not.toContain('Review guide')
+  expect(w.calls.filter(c => c.startsWith('git show'))).toEqual(['git show origin/main:.no-mistakes.yaml'])
+})
+
+for (const value of ['', ' ~', ' ""']) {
+  test(`${JSON.stringify(`guide:${value}`)} sets no guide, beside an exclude list in either order`, async ($, on) => {
+    const w = world($, on, { config: `${CONFIG}review:\n  guide:${value}\n  exclude:\n    - a.lock\n` })
+    await start($)
+    expect(lastRun(w).steps.rebase).toMatchObject({ status: 'passed' })
+    expect(lastRun(w).exclude).toEqual(['a.lock'])
+    expect(lastRun(w).guide).toBeUndefined()
+  })
+}
+
+test('review.guide after an exclude list is read with it', async ($, on) => {
+  const w = world($, on, { config: `${CONFIG}review:\n  exclude:\n    - a.lock\n  guide: "docs/REVIEW.md" # team standards\n` })
+  w.rules.push(showGuide(GUIDE_TEXT))
+  await start($)
+  expect(lastRun(w).exclude).toEqual(['a.lock'])
+  expect(lastRun(w).guide).toEqual({ path: 'docs/REVIEW.md', text: GUIDE_TEXT })
+})
+
+test('a review.guide that origin/<base> does not have fails the run at rebase with the path', async ($, on) => {
+  const w = world($, on, { config: GUIDE })
+  w.rules.push(line => (line === LS_GUIDE ? { stdout: '' } : undefined))
+  await start($)
+  const run = lastRun(w)
+  expect(run.steps.rebase).toMatchObject({ status: 'failed', reason: 'review.guide names docs/REVIEW.md, which origin/main does not have' })
+  expect(run.outcome).toBe('failed')
+  expect(w.spawns).toHaveLength(0)
+})
+
+for (const [failing, stderr] of [[LS_GUIDE, 'fatal: not a tree object'], [`git cat-file blob ${GUIDE_SHA}`, 'fatal: bad file']] as const) {
+  test(`a review.guide that git fails to read (${failing.split(' ').slice(1, 3).join(' ')}) fails the run at rebase with git's error, not as a missing file`, async ($, on) => {
+    const w = world($, on, { config: GUIDE })
+    w.rules.push(line => (line === failing ? { exitCode: 128, stderr } : undefined), showGuide(GUIDE_TEXT))
+    await start($)
+    const run = lastRun(w)
+    expect(run.steps.rebase).toMatchObject({ status: 'failed', reason: `review.guide names docs/REVIEW.md, which git could not read from origin/main: ${stderr}` })
+    expect(run.guide).toBeUndefined()
+    expect(w.spawns).toHaveLength(0)
+  })
+}
+
+test('an empty review.guide file gives the reviewer an empty guide and the run goes on', async ($, on) => {
+  const w = world($, on, { config: GUIDE })
+  w.rules.push(showGuide(''))
+  await start($)
+  expect(lastRun(w).guide).toEqual({ path: 'docs/REVIEW.md', text: '' })
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-1' })
+})
+
+test('a review.guide that names a directory on origin/<base> fails the run at rebase, and its listing never reaches the reviewer', async ($, on) => {
+  const w = world($, on, { config: `${CONFIG}review:\n  guide: docs\n` })
+  w.rules.push(line => (line === 'git --literal-pathspecs ls-tree -z --full-tree origin/main -- docs' ? entryOf('040000', 'tree', GUIDE_SHA, 'docs') : undefined))
+  await start($)
+  const run = lastRun(w)
+  expect(run.steps.rebase).toMatchObject({ status: 'failed', reason: 'review.guide names docs, which is a tree on origin/main, not a file' })
+  expect(run.outcome).toBe('failed')
+  expect(run.guide).toBeUndefined()
+  expect(w.calls.some(c => c.startsWith('git cat-file blob'))).toBe(false)
+  expect(w.spawns).toHaveLength(0)
+})
+
+for (const [mode, kind, what] of [['120000', 'blob', 'a symbolic link'], ['160000', 'commit', 'a submodule']] as const) {
+  test(`a review.guide that is ${what} on origin/<base> fails the run at rebase, and its target or commit never reaches the reviewer`, async ($, on) => {
+    const w = world($, on, { config: GUIDE })
+    w.rules.push(line => (line === LS_GUIDE ? entryOf(mode, kind, GUIDE_SHA) : undefined))
+    w.rules.push(line => (line.startsWith('git cat-file blob') ? { stdout: 'docs/OTHER.md' } : undefined))
+    await start($)
+    const run = lastRun(w)
+    expect(run.steps.rebase).toMatchObject({ status: 'failed', reason: `review.guide names docs/REVIEW.md, which is ${what} on origin/main, not a file` })
+    expect(run.outcome).toBe('failed')
+    expect(run.guide).toBeUndefined()
+    expect(w.calls.some(c => c.startsWith('git cat-file blob'))).toBe(false)
+    expect(w.spawns).toHaveLength(0)
+  })
+}
+
+test('a review.guide is read as the blob stores it, never through git show, which would run a configured textconv', async ($, on) => {
+  const w = world($, on, { config: GUIDE })
+  w.rules.push(showGuide(GUIDE_TEXT))
+  await start($)
+  expect(w.calls).toContain(`git cat-file blob ${GUIDE_SHA}`)
+  expect(w.calls.some(c => c.startsWith('git show origin/main:docs'))).toBe(false)
+  expect(lastRun(w).guide).toEqual({ path: 'docs/REVIEW.md', text: GUIDE_TEXT })
+})
+
+test('a review.guide over 30,000 characters fails the run at rebase with its size', async ($, on) => {
+  const w = world($, on, { config: GUIDE })
+  w.rules.push(showGuide('x'.repeat(30_001)))
+  await start($)
+  expect(lastRun(w).steps.rebase).toMatchObject({ status: 'failed', reason: 'review.guide names docs/REVIEW.md, which has 30,001 characters on origin/main; the limit is 30,000' })
+  expect(w.spawns).toHaveLength(0)
+})
+
+test('a review.guide of exactly 30,000 characters is read', async ($, on) => {
+  const w = world($, on, { config: GUIDE })
+  w.rules.push(showGuide('x'.repeat(30_000)))
+  await start($)
+  expect(lastRun(w).guide?.text).toHaveLength(30_000)
+  expect(w.spawns).toHaveLength(1)
+})
+
+test('a run stored before review.guide existed (no guide field) still reviews, with no guide block', async ($, on) => {
+  const w = world($, on, { legacy: true, config: GUIDE })
+  w.rules.push(showGuide(GUIDE_TEXT))
+  await start($)
+  expect(lastRun(w).guide).toBeUndefined()
+  expect(w.spawns).toHaveLength(1)
+  expect(w.spawns[0]!.prompt).not.toContain('Review guide')
 })
 
 const AUTOFIX_VALUES = [
