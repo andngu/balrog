@@ -1,4 +1,4 @@
-import type { CommandName, Commands, Config, Run } from '../types'
+import type { CommandName, Commands, Config, Guide, Run } from '../types'
 import { io } from './io'
 
 type Ran = { ok: boolean; code: number; out: string; err: string }
@@ -194,7 +194,7 @@ async function fetchRefs(run: Run): Promise<{ ok: true; remoteHead: string } | {
 export type Behind = 'pull' | 'rewritten'
 
 export type Rebased =
-  | { kind: 'rebased'; head: string; remoteHead: string; isEmpty: boolean; config: Config }
+  | { kind: 'rebased'; head: string; remoteHead: string; isEmpty: boolean; config: Pick<Run, 'commands' | 'exclude' | 'autofix' | 'document' | 'guide'> }
   | { kind: 'behind'; remoteHead: string; how: Behind }
   | { kind: 'conflict'; detail: string }
   | { kind: 'error'; detail: string }
@@ -229,7 +229,27 @@ export async function rebase(run: Run): Promise<Rebased> {
   const isEmpty = count.out === '0' || changed.ok
   const config = parseConfig(await showOnBase(run, '.no-mistakes.yaml'))
   if ('error' in config) return { kind: 'error', detail: `.no-mistakes.yaml on origin/${run.base}: ${config.error}` }
-  return { kind: 'rebased', head, remoteHead, isEmpty, config }
+  const { guide: path, ...settings } = config
+  const guide = path === undefined ? undefined : await readGuide(run, path)
+  if (guide !== undefined && 'error' in guide) return { kind: 'error', detail: guide.error }
+  return { kind: 'rebased', head, remoteHead, isEmpty, config: { ...settings, guide } }
+}
+
+async function readGuide(run: Run, path: string): Promise<Guide | { error: string }> {
+  const unread = (r: Ran) => ({ error: `review.guide names ${path}, which git could not read from origin/${run.base}: ${r.err || `exit ${r.code}`}` })
+  // ls-tree gives the mode, so a symlink is refused before cat-file, which also skips the textconv `git show` would run.
+  const listed = await wt(run, '--literal-pathspecs', 'ls-tree', '-z', '--full-tree', `origin/${run.base}`, '--', path)
+  if (!listed.ok) return unread(listed)
+  const entry = listed.out.split('\0').map(line => /^(\d+) (\w+) ([0-9a-f]+)\t(.*)$/s.exec(line)).find(m => m?.[4] === path)
+  if (!entry) return { error: `review.guide names ${path}, which origin/${run.base} does not have` }
+  const [, mode = '', kind = '', sha = ''] = entry
+  if (mode === '120000') return { error: `review.guide names ${path}, which is a symbolic link on origin/${run.base}, not a file` }
+  if (kind !== 'blob') return { error: `review.guide names ${path}, which is a ${kind === 'commit' ? 'submodule' : kind} on origin/${run.base}, not a file` }
+  const blob = await wt(run, 'cat-file', 'blob', sha)
+  if (!blob.ok) return unread(blob)
+  const text = blob.out
+  if (text.length > GUIDE_LIMIT) return { error: `review.guide names ${path}, which has ${text.length.toLocaleString('en-US')} characters on origin/${run.base}; the limit is ${GUIDE_LIMIT.toLocaleString('en-US')}` }
+  return { path, text }
 }
 
 export async function headOf(run: Run): Promise<string | undefined> {
@@ -266,6 +286,7 @@ export async function push(run: Run): Promise<{ ok: true; head: string } | { ok:
 const DIFF = ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--text']
 
 const DIFF_CAP = 120_000
+const GUIDE_LIMIT = 30_000
 
 // `--text` does not reach a stat, so a stat reads attributes from
 // origin/<base>: a `-diff` the branch adds cannot show its code as "Bin". Git
@@ -351,7 +372,7 @@ function parseConfig(text: string | undefined): Config | { error: string } {
     }
     const top = /^([A-Za-z_]+):(.*)$/.exec(line)
     const known = FLAGS.find(f => f === top?.[1]) ?? SECTIONS.find(s => s === top?.[1])
-    const misplaced = /^-(\s|$)/.test(line) || (top !== null && (top[1] === 'exclude' || COMMAND_NAMES.some(n => n === top[1])))
+    const misplaced = /^-(\s|$)/.test(line) || (top !== null && (REVIEW_KEYS.some(k => k === top[1]) || COMMAND_NAMES.some(n => n === top[1])))
     if (section !== undefined && known === undefined && misplaced) {
       return { error: `cannot read "${line.trim()}" under ${section}: entries must be indented under their section key, and commands:, review:, autofix: and document: are the only top-level keys read` }
     }
@@ -367,9 +388,9 @@ function parseConfig(text: string | undefined): Config | { error: string } {
   }
   const commands = readCommands(body.commands)
   if ('error' in commands) return commands
-  const exclude = readExclude(body.review)
-  if ('error' in exclude) return exclude
-  return { commands, exclude, autofix: flags.autofix ?? DEFAULT_FLAGS.autofix, document: flags.document ?? DEFAULT_FLAGS.document }
+  const review = readReview(body.review)
+  if ('error' in review) return review
+  return { commands, ...review, autofix: flags.autofix ?? DEFAULT_FLAGS.autofix, document: flags.document ?? DEFAULT_FLAGS.document }
 }
 
 const isFlag = (key: string): key is Flag => FLAGS.some(f => f === key)
@@ -390,24 +411,36 @@ function readFlag(key: Flag, line: string): boolean | undefined | { error: strin
 
 const misread = (line: string, section: string) => ({ error: `cannot read "${line.trim()}" under ${section}: (a nested, continued or misaligned line)` })
 
+const REVIEW_KEYS = ['exclude', 'guide'] as const
+
+type ReviewKey = (typeof REVIEW_KEYS)[number]
+
 // A pattern starting with `:` is read by git as pathspec magic, not as a path:
 // `:(exclude):(top)keep.ts` excludes nothing.
-function readExclude(lines: string[]): string[] | { error: string } {
+function readReview(lines: string[]): Pick<Config, 'exclude' | 'guide'> | { error: string } {
   const exclude: string[] = []
-  let keyIndent: string | undefined
+  let guide: string | undefined
+  const seen = new Set<ReviewKey>()
+  let current: { key: ReviewKey; indent: string } | undefined
   let itemIndent: string | undefined
   for (const line of lines) {
     const key = /^( +)([A-Za-z_]+):(.*)$/.exec(line)
     if (key) {
-      if (keyIndent !== undefined && key[1] !== keyIndent) return misread(line, 'review')
-      if (key[2] !== 'exclude') return { error: `review.${key[2]} is not read; review: holds only exclude:` }
-      if (keyIndent !== undefined) return { error: 'review.exclude is set twice' }
-      if (!/^(\s+#.*)?$/.test(key[3]!)) return { error: 'review.exclude: must be followed by one "- <pattern>" line per pattern' }
-      keyIndent = key[1]
+      if (current !== undefined && key[1] !== current.indent) return misread(line, 'review')
+      const name = REVIEW_KEYS.find(k => k === key[2])
+      if (!name) return { error: `review.${key[2]} is not read; review: holds only exclude: and guide:` }
+      if (seen.has(name)) return { error: `review.${name} is set twice` }
+      seen.add(name)
+      current = { key: name, indent: key[1]! }
+      if (name === 'guide') {
+        const read = readGuidePath(key[3]!)
+        if (typeof read === 'object') return read
+        guide = read
+      } else if (!/^(\s+#.*)?$/.test(key[3]!)) return { error: 'review.exclude: must be followed by one "- <pattern>" line per pattern' }
       continue
     }
     const item = /^( +)-(?:\s+(.*))?$/.exec(line)
-    if (!item || keyIndent === undefined || item[1]!.length < keyIndent.length || (itemIndent !== undefined && item[1] !== itemIndent)) return misread(line, 'review')
+    if (!item || current?.key !== 'exclude' || item[1]!.length < current.indent.length || (itemIndent !== undefined && item[1] !== itemIndent)) return misread(line, 'review')
     itemIndent = item[1]
     const value = scalar(item[2] ?? '')
     if (typeof value === 'object') return { error: `review.exclude: ${value.error}` }
@@ -415,7 +448,19 @@ function readExclude(lines: string[]): string[] | { error: string } {
     if (/^[:-]/.test(value)) return { error: `review.exclude: "${value}": a pattern cannot begin with : or -` }
     exclude.push(value)
   }
-  return exclude
+  return { exclude, guide }
+}
+
+// readGuide matches ls-tree's entry name to the path as written, so a path git
+// would normalize is refused here rather than read as a missing file.
+function readGuidePath(raw: string): string | undefined | { error: string } {
+  const entry = /^(?:\s+(.*))?$/.exec(raw)
+  if (!entry) return { error: 'review.guide: must be followed by a space and a path' }
+  const value = scalar(entry[1] ?? '')
+  if (typeof value === 'object') return { error: `review.guide: ${value.error}` }
+  if (value === undefined || value.trim() === '') return undefined
+  if (value.split('/').some(part => part === '' || part === '.' || part === '..')) return { error: `review.guide: "${value}" must be a path from the repository root, with no leading or trailing /, and no empty, . or .. part` }
+  return value
 }
 
 function readCommands(lines: string[]): Commands | { error: string } {
