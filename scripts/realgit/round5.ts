@@ -46,5 +46,11 @@ export async function round5(h: any): Promise<void> {
   const committed = await git.commitAll({ ...run, written: ['d', 'e.txt'] }, 'fix(no-mistakes/test): make the test check pass')
   const files = (await out(['git', 'show', '--name-only', '--format=', 'HEAD'], wt)).split('\n').sort()
   check('R5-4: a recorded path that became a directory commits nothing under it; the exact entry e.txt is committed', committed.kind === 'committed' && JSON.stringify(files) === JSON.stringify(['data.bin', 'e.txt', 'pkg.lock']), JSON.stringify({ committed, files }))
+
+  const commits = await git.pipelineCommits(run)
+  check('R5-5: pipelineCommits shows a file the branch marks -diff as text lines, not Bin', /data\.bin +\| +2 \+-/.test(commits), commits)
+  check('R5-5: a -diff of origin/main (the lockfile) still applies', /pkg\.lock +\| Bin/.test(commits), commits)
+  const plain = await out(['git', 'log', '--format=%h %s', '--stat', `${run.head}..HEAD`], wt)
+  check('R5-5: (control) a plain git log --stat shows data.bin as Bin', /data\.bin +\| Bin/.test(plain), plain)
   await git.removeWorktree(run)
 }

@@ -1493,7 +1493,7 @@ test('R4-9/10: a dangling link and a .git spelled in another case are not places
 test('R4-11: the mod commits are listed in the pane and appended to the PR body', async ($, on) => {
   const w = world($, on, { gh: true })
   const LOG = 'cccc333 fix(no-mistakes/test): make the test check pass\n a.ts | 2 +-\n 1 file changed'
-  w.rules.push(line => (line === `git log --no-color --no-show-signature --format=%h %s --stat ${REBASED}..HEAD` ? { stdout: LOG } : undefined))
+  w.rules.push(line => (line === `git --attr-source=origin/main log --no-ext-diff --no-textconv --no-color --text --no-show-signature --format=%h %s --stat ${REBASED}..HEAD` ? { stdout: LOG } : undefined))
   await start($)
   await passTwo($)
   const run = lastRun(w)
@@ -1583,3 +1583,12 @@ test('R5-3: a timed-out agent is stopped and its edits are committed under its o
   expect(w.calls.slice(before).some(c => c.startsWith('git commit'))).toBe(false)
 })
 
+test('R5-5: on a git without --attr-source the commit list falls back to the plain log', async ($, on) => {
+  const w = world($, on)
+  const LOG = 'cccc333 fix(no-mistakes/test): make the test check pass\n a.ts | 2 +-\n 1 file changed'
+  w.rules.push(line => (line.startsWith('git --attr-source') ? { exitCode: 129, stderr: 'unknown option: --attr-source=origin/main' } : undefined))
+  w.rules.push(line => (line === `git log --no-ext-diff --no-textconv --no-color --text --no-show-signature --format=%h %s --stat ${REBASED}..HEAD` ? { stdout: LOG } : undefined))
+  await start($)
+  await passTwo($)
+  expect(lastRun(w).commits).toBe(LOG)
+})

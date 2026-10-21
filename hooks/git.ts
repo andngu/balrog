@@ -411,9 +411,14 @@ export async function commitAll(run: Run, message: string): Promise<Committed> {
 }
 
 // The mod's own commits since the rebased head, as `<sha> <subject>` and a
-// stat each, for the pane and the PR body.
+// stat each, for the pane and the PR body. `--text` does not reach a stat, so
+// attributes are read from origin/<base>: a `-diff` the branch adds cannot
+// show its code as "Bin". Git before 2.40 has no --attr-source and reads the
+// branch's.
 export async function pipelineCommits(run: Run): Promise<string> {
-  const r = await wt(run, 'log', '--no-color', '--no-show-signature', '--format=%h %s', '--stat', `${run.head}..HEAD`)
+  const log = ['log', ...DIFF.slice(1), '--no-show-signature', '--format=%h %s', '--stat', `${run.head}..HEAD`]
+  const based = await wt(run, `--attr-source=origin/${run.base}`, ...log)
+  const r = based.ok ? based : await wt(run, ...log)
   return r.ok ? r.out : ''
 }
 
