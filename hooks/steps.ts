@@ -2,7 +2,8 @@ import type { Decision, Finding, Run, StepName, StepState } from '../types'
 import * as git from './git'
 import { io } from './io'
 import { ciFixPrompt, commandPrompt, documentPrompt, FIXER_SYSTEM, prBodyPrompt, recheckPrompt, reviewPrompt, REVIEWER_SYSTEM } from './prompts'
-import { approvedOrSkipped, CI_GRACE_MS, CI_QUIET_MS, CI_TIMEOUT_MS, commitLines, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN, slug } from './run'
+import type { PriorApproval } from './run'
+import { approvedOrSkipped, CI_GRACE_MS, CI_QUIET_MS, CI_TIMEOUT_MS, commitLines, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN, priorApprovals, slug } from './run'
 
 export const REVIEWER = `${PLUGIN}:reviewer`
 export const FIXER = `${PLUGIN}:fixer`
@@ -115,6 +116,16 @@ const rebase: StepDef = {
   check: notAgentDriven('rebase'),
 }
 
+async function priorApprovalsOrNone(run: Run): Promise<PriorApproval[]> {
+  if (run.recordDir === undefined) return []
+  const path = `${run.recordDir}/history.jsonl`
+  try {
+    return (await io().exists(path)) ? priorApprovals((await io().read(path)).split('\n'), run) : []
+  } catch {
+    return []
+  }
+}
+
 const review: StepDef = {
   name: 'review',
   async start(run) {
@@ -122,7 +133,7 @@ const review: StepDef = {
     if (reviewedHead === undefined) return failed('cannot read the worktree HEAD')
     const diff = await git.reviewDiff(run)
     if (!diff.ok) return failed(`cannot read the change to review; fail closed: ${diff.reason}`)
-    return running(run, REVIEWER, reviewPrompt(run, diff.text), 'review', { reviewedHead })
+    return running(run, REVIEWER, reviewPrompt(run, diff.text, await priorApprovalsOrNone(run)), 'review', { reviewedHead })
   },
   check: gateAnswer('review'),
 }
@@ -147,7 +158,7 @@ const recheck: StepDef = {
     if (!commits.ok) return failed(`cannot list the pipeline's commits to recheck; fail closed: ${commits.reason}`)
     const diff = await git.reviewDiff(run, from)
     if (!diff.ok) return failed(`cannot read the pipeline's commits to recheck; fail closed: ${diff.reason}`)
-    return running(run, REVIEWER, recheckPrompt(run, from, commitLines(commits.text).join('\n'), diff.text), 'recheck')
+    return running(run, REVIEWER, recheckPrompt(run, from, commitLines(commits.text).join('\n'), diff.text, await priorApprovalsOrNone(run)), 'recheck')
   },
   check: gateAnswer('recheck'),
   reopens: ['test', 'lint'],

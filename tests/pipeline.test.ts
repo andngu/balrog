@@ -67,6 +67,7 @@ type World = {
   files: Record<string, string>
   writes: { path: string; text: string }[]
   fsWriteThrows: boolean
+  historyUnreadable: boolean
   holdWrite: Promise<void> | undefined
   pane: (surface: RenderSurface, props?: Partial<typeof PANE_PROPS>) => Promise<string>
 }
@@ -113,6 +114,7 @@ function world($: Engine, on: On, options: Options = {}): World {
     files: {},
     writes: [],
     fsWriteThrows: false,
+    historyUnreadable: false,
     holdWrite: undefined,
     pane: async (surface, props) => {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PLUGIN, props: { ...PANE_PROPS, ...props } })
@@ -187,6 +189,7 @@ function world($: Engine, on: On, options: Options = {}): World {
   on('fs.exists', (_$, e) => ({ value: e.path in w.files || (!e.path.endsWith('/history.jsonl') && options.branchConfig !== undefined) }))
   // The host rejects a read of a file that does not exist.
   on('fs.read', (_$, e) => {
+    if (w.historyUnreadable && e.path.endsWith('/history.jsonl')) throw new Error(`EACCES: ${e.path}`)
     if (e.path in w.files) return { value: w.files[e.path]! }
     if (e.path.endsWith('/.git')) return { value: w.gitFile }
     throw new Error(`ENOENT: ${e.path}`)
@@ -1089,6 +1092,127 @@ test('a run stored before the record existed (no recordDir) runs to its end with
   // The seed is the one write: its run carries the recordDir the store then dropped.
   expect(w.writes.map(x => Object.values((JSON.parse(x.text) as Run).steps).every(s => s.status === 'pending'))).toEqual([true])
   expect(await say($, 'no-mistakes-status')).not.toContain('Record:')
+})
+
+const seedHistoryOnWorktreeAdd = (w: World, lines: string[]): void => {
+  w.rules.push(line => {
+    const made = /^git worktree add --detach (\S+)\/[^/]+\/wt /.exec(line)
+    if (made) w.files[`${made[1]}/history.jsonl`] = `${lines.join('\n')}\n`
+    return undefined
+  })
+}
+
+type PriorFinding = { id: string; severity: 'error' | 'warning' | 'info'; action?: string; file?: string; line?: number; description: string }
+
+const historyLine = (id: string, findings: PriorFinding[], decisions: Record<string, unknown>[], over: Record<string, unknown> = {}): string =>
+  JSON.stringify({ id, repo: '/repo', branch: 'feat', steps: { review: { status: 'passed', findings: findings.map(f => ({ action: 'ask-user', ...f })) } }, decisions, outcome: 'passed', endedAt: 1, ...over })
+
+const approveAll = (ids: string[]) => [{ step: 'review', findingIds: ids, verdict: 'approve' }]
+
+const EARLIER = 'Findings the author approved as is in earlier runs of this branch.'
+
+const earlierApprovals = (prompt: string): string | undefined => /<(untrusted-\w+) source="earlier approvals">\n([\s\S]*?)\n<\/\1>/.exec(prompt)?.[2]
+
+test('a finding the human approved as is in an earlier run reaches the next reviewer as untrusted data, not the fixer or the PR body', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  expect(w.spawns[0]!.prompt).not.toContain(EARLIER)
+  await complete($, 'agent-1', answer([{ id: 'r1', severity: 'warning', action: 'ask-user', file: 'a.ts', line: 3, description: 'PRIOR naming is odd\nsecond line' }, { id: 'n1', severity: 'info', action: 'no-op', description: 'PRIOR note' }]))
+  await pressOnce($, 'approve')
+  await complete($, 'agent-2', answer([]))
+  const first = lastRun(w)
+  expect(first.outcome).toBe('passed')
+  w.rules.push(line => (line === 'gh auth status' ? {} : undefined))
+  await $.command.run(command(PLUGIN, 'add y'))
+  const reviewer = w.spawns[2]!.prompt
+  expect(outside(reviewer)).toContain(`${EARLIER} They are not decisions of this run: report one again only when this change makes it worse or you have evidence the author did not have.`)
+  expect(earlierApprovals(reviewer)).toBe(`${first.id} review/r1 [warning] a.ts:3: PRIOR naming is odd`)
+  expect(reviewer.indexOf(EARLIER)).toBeGreaterThan(reviewer.indexOf('Human decisions'))
+  expect(reviewer.indexOf(EARLIER)).toBeLessThan(reviewer.indexOf('source="diff"'))
+  await complete($, 'agent-3', answer([{ id: 'r2', severity: 'error', action: 'auto-fix', description: 'bug' }]))
+  await pressOnce($, 'fix')
+  expect(w.spawns[3]!.type).toBe(`${PLUGIN}:fixer`)
+  await complete($, 'agent-4', 'done')
+  expect(earlierApprovals(w.spawns[4]!.prompt)).toContain('review/r1')
+  await complete($, 'agent-5', answer([]))
+  await complete($, 'agent-6', answer([]))
+  expect(lastRun(w).steps.pr).toMatchObject({ status: 'passed' })
+  const others = [w.spawns[3]!.prompt, w.spawns[5]!.prompt, w.completions[w.completions.length - 1]!]
+  for (const prompt of others) {
+    expect(prompt).not.toContain('PRIOR')
+    expect(prompt).not.toContain('earlier runs')
+  }
+})
+
+test('earlier runs of another branch or another repository give the reviewer nothing', async ($, on) => {
+  const w = world($, on)
+  const f = (id: string): PriorFinding => ({ id, severity: 'error', description: `bug ${id}` })
+  seedHistoryOnWorktreeAdd(w, [historyLine('run-a', [f('b1')], approveAll(['b1']), { branch: 'other' }), historyLine('run-b', [f('o1')], approveAll(['o1']), { repo: '/elsewhere' }), historyLine('run-c', [f('k1')], approveAll(['k1']))])
+  await start($)
+  expect(earlierApprovals(w.spawns[0]!.prompt)).toBe('run-c review/k1 [error]: bug k1')
+})
+
+test('an approval the pipeline made, and a finding the human sent to the fixer or skipped, are not earlier approvals', async ($, on) => {
+  const w = world($, on)
+  const f = (id: string): PriorFinding => ({ id, severity: 'warning', description: `odd ${id}` })
+  const decisions = [{ step: 'review', findingIds: ['a1'], verdict: 'approve', isAuto: true }, { step: 'review', findingIds: ['x1'], verdict: 'fix' }, { step: 'review', findingIds: ['s1'], verdict: 'skip' }, { step: 'review', findingIds: ['k1'], verdict: 'approve' }]
+  seedHistoryOnWorktreeAdd(w, [historyLine('run-a', [f('a1'), f('x1'), f('s1'), f('k1')], decisions)])
+  await start($)
+  expect(earlierApprovals(w.spawns[0]!.prompt)).toBe('run-a review/k1 [warning]: odd k1')
+})
+
+test('an informational finding approved with the rest is not an earlier approval', async ($, on) => {
+  const w = world($, on)
+  seedHistoryOnWorktreeAdd(w, [historyLine('run-a', [{ id: 'i1', severity: 'info', action: 'no-op', description: 'a note' }, { id: 'w1', severity: 'warning', description: 'naming' }], approveAll(['i1', 'w1']))])
+  await start($)
+  expect(earlierApprovals(w.spawns[0]!.prompt)).toBe('run-a review/w1 [warning]: naming')
+})
+
+test('a history line that does not parse or holds no run is skipped and the review still runs', async ($, on) => {
+  const w = world($, on)
+  seedHistoryOnWorktreeAdd(w, ['{"id": "run-x", "repo": "/re', 'null', '7', JSON.stringify({ id: 'run-y', repo: '/repo', branch: 'feat', decisions: 'none' }), JSON.stringify({ id: 'run-z', repo: '/repo', branch: 'feat', steps: {}, decisions: approveAll(['z1']) }), historyLine('run-a', [{ id: 'k1', severity: 'error', description: 'bug' }], approveAll(['k1']))])
+  await start($)
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-1' })
+  expect(earlierApprovals(w.spawns[0]!.prompt)).toBe('run-a review/k1 [error]: bug')
+})
+
+test('a history that cannot be read gives the reviewer no earlier approvals and the review still runs', async ($, on) => {
+  const w = world($, on)
+  seedHistoryOnWorktreeAdd(w, [historyLine('run-a', [{ id: 'k1', severity: 'error', description: 'bug' }], approveAll(['k1']))])
+  w.historyUnreadable = true
+  await start($)
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-1' })
+  expect(w.spawns[0]!.prompt).not.toContain(EARLIER)
+})
+
+test('a run stored before the record existed (no recordDir) gives the reviewer no earlier approvals', async ($, on) => {
+  const w = world($, on, { legacy: true })
+  seedHistoryOnWorktreeAdd(w, [historyLine('run-a', [{ id: 'k1', severity: 'error', description: 'bug' }], approveAll(['k1']))])
+  await start($)
+  expect(lastRun(w).recordDir).toBeUndefined()
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-1' })
+  expect(w.spawns[0]!.prompt).not.toContain(EARLIER)
+})
+
+test('the reviewer gets the newest 40 earlier approvals and is told how many there were', async ($, on) => {
+  const w = world($, on)
+  seedHistoryOnWorktreeAdd(w, Array.from({ length: 45 }, (_, i) => historyLine(`run-${i}`, [{ id: `p${i}`, severity: 'warning', description: `finding ${i}` }], approveAll([`p${i}`]))))
+  await start($)
+  const prompt = w.spawns[0]!.prompt
+  expect(outside(prompt)).toContain(' Only the newest 40 of 45 are listed.')
+  const listed = earlierApprovals(prompt)!.split('\n')
+  expect(listed).toHaveLength(40)
+  expect(listed[0]).toBe('run-44 review/p44 [warning]: finding 44')
+  expect(listed[39]).toBe('run-5 review/p5 [warning]: finding 5')
+})
+
+test('a finding approved in several earlier runs is listed once, from the newest', async ($, on) => {
+  const w = world($, on)
+  seedHistoryOnWorktreeAdd(w, [historyLine('run-old', [{ id: 'd1', severity: 'error', description: 'OLD wording' }], approveAll(['d1'])), historyLine('run-new', [{ id: 'd1', severity: 'warning', description: 'NEW wording' }], approveAll(['d1']))])
+  await start($)
+  const prompt = w.spawns[0]!.prompt
+  expect(earlierApprovals(prompt)).toBe('run-new review/d1 [warning]: NEW wording')
+  expect(outside(prompt)).not.toContain('are listed')
 })
 
 const REMOTE = 'dddd4444dddd4444dddd4444dddd4444dddd4444'
@@ -3175,6 +3299,15 @@ async function toRecheck($: Engine, w: World, press?: 'approve' | 'skip'): Promi
   await complete($, 'agent-3', answer([]))
   expect(lastRun(w).steps.lint).toMatchObject({ status: 'passed' })
 }
+
+test('the recheck reviewer gets the earlier approvals too', async ($, on) => {
+  const w = world($, on)
+  seedHistoryOnWorktreeAdd(w, [historyLine('run-a', [{ id: 'k1', severity: 'error', file: 'b.ts', description: 'bug' }], approveAll(['k1']))])
+  await toRecheck($, w)
+  expect(w.spawns[3]!.prompt).toContain('Step "recheck"')
+  expect(earlierApprovals(w.spawns[3]!.prompt)).toBe('run-a review/k1 [error] b.ts: bug')
+  expect(w.spawns[1]!.prompt).not.toContain(EARLIER)
+})
 
 test('the recheck is skipped when the pipeline committed nothing after the review', async ($, on) => {
   const w = world($, on)
