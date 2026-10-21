@@ -286,6 +286,7 @@ async function tick(): Promise<void> {
   const run = await io().readRun()
   const name = run && !run.outcome ? currentStep(run) : undefined
   if (!run || !name) return stopPolling()
+  io().invalidate()
   const state = run.steps[name]
   const now = await io().now()
   if (isAgentDriven(state) && now - state.startedAt > AGENT_TIMEOUT_MS) {

@@ -46,6 +46,7 @@ type World = {
   listThrows: boolean
   lists: number
   notifies: number
+  invalidates: number
   stops: string[]
   stopFails: boolean
   status: Record<string, 'running' | 'completed' | 'killed'>
@@ -86,6 +87,7 @@ function world($: Engine, on: On, options: Options = {}): World {
     listThrows: false,
     lists: 0,
     notifies: 0,
+    invalidates: 0,
     stops: [],
     stopFails: false,
     status: {},
@@ -164,6 +166,10 @@ function world($: Engine, on: On, options: Options = {}): World {
   on('ui.notify', () => {
     w.notifies++
     return { value: { isSent: true, channel: 'terminal_bell' } }
+  })
+  on('ui.invalidate', () => {
+    w.invalidates++
+    return { value: undefined }
   })
   on('fs.exists', () => ({ value: options.branchConfig !== undefined }))
   on('fs.read', (_$, e) => ({ value: e.path.endsWith('/.git') ? w.gitFile : options.branchConfig ?? '' }))
@@ -501,6 +507,19 @@ test('ci parks after 30 minutes of pending checks', async ($, on) => {
   await w.clock.advance(2 * 60_000)
   expect(lastRun(w).steps.ci).toMatchObject({ status: 'parked', findings: [{ id: 'ci:timeout' }] })
   expect(await w.pane('terminal')).toContain('Parked at ci')
+})
+
+test('the pane is redrawn on every tick while a step runs, and not once the run has ended', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  const before = w.invalidates
+  await w.clock.advance(30_000)
+  expect(w.invalidates).toBe(before + 1)
+  await pressOnce($, 'abort')
+  expect(lastRun(w).outcome).toBe('aborted')
+  const after = w.invalidates
+  await w.clock.advance(60_000)
+  expect(w.invalidates).toBe(after)
 })
 
 test('/no-mistakes-status reopens the pane and reports the run', async ($, on) => {

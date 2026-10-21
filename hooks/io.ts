@@ -24,6 +24,7 @@ export type Io = {
   status: (text: string | undefined) => void
   toast: (text: string) => void
   notify: (text: string) => Promise<UiNotifyResult>
+  invalidate: () => void
   readRun: () => Promise<Run | null>
   writeRun: (change: (run: Run | null) => Run | null) => Promise<Run | null>
   readSelected: () => Promise<string[]>
