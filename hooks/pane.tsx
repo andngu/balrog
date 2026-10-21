@@ -4,7 +4,7 @@ import type { Color, On } from 'claude-code'
 import type { Finding, FollowUp, Run, StepName, StepState, Verdict } from '../types'
 import { press, toggle } from './engine'
 import { io } from './io'
-import { AGENT_TIMEOUT_MS, commitLines, currentStep, fixRounds, isAutoRound, isBlocking, MAX_FIX_ROUNDS, PANE, STEP_ORDER } from './run'
+import { AGENT_TIMEOUT_MS, commitLines, currentStep, fixRounds, fromStore, isAutoRound, isBlocking, MAX_FIX_ROUNDS, PANE, STEP_ORDER } from './run'
 
 type Status = StepState['status']
 type Context = { run: Run; name: StepName; now: number }
@@ -43,7 +43,7 @@ function detail(state: StepState, { run, name, now }: Context): string {
       return (command === undefined ? 'starting' : `running ${command}`) + clock(state, now)
     }
     case 'running':
-      return `${name === 'review' ? 'reviewer working' : name === 'ci' ? 'waiting on checks' : 'fixer working'}${state.reasked ? ', asked again for findings' : ''}${clock(state, now)}`
+      return `${name === 'review' || name === 'recheck' ? 'reviewer working' : name === 'ci' ? 'waiting on checks' : 'fixer working'}${state.reasked ? ', asked again for findings' : ''}${clock(state, now)}`
     case 'fixing':
       return `${isAutoRound(run, name) ? `auto-fixing (fix round ${state.round})` : `fix round ${state.round}`}${clock(state, now)}`
     case 'parked':
@@ -144,7 +144,8 @@ const selectedAtom = atom({ plugin: 'no-mistakes', key: 'selected' } as const, [
 export function registerPane(on: On): void {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Link } = $.ui.resolve(e)
-    const run = await read($, runAtom)
+    const stored = await read($, runAtom)
+    const run = stored && fromStore(stored)
     if (!run) {
       return (
         <Box flexDirection="column">

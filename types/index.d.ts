@@ -1,4 +1,4 @@
-export type StepName = 'rebase' | 'review' | 'test' | 'document' | 'lint' | 'push' | 'pr' | 'ci'
+export type StepName = 'rebase' | 'review' | 'test' | 'document' | 'lint' | 'recheck' | 'push' | 'pr' | 'ci'
 
 export type Severity = 'error' | 'warning' | 'info'
 
@@ -66,6 +66,8 @@ export type Run = {
   autofix: boolean
   document: boolean
   guide?: Guide
+  // The worktree HEAD the reviewer was last handed, passed, approved or skipped.
+  reviewedHead?: string
   prepared?: true
   // Worktree-relative paths a run agent wrote: the only untracked files the
   // mod commits, so what a command leaves behind stays out.

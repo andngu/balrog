@@ -1,7 +1,7 @@
 import type { Decision, Finding, Run, StepName, StepState } from '../types'
 import * as git from './git'
 import { io } from './io'
-import { ciFixPrompt, commandPrompt, documentPrompt, FIXER_SYSTEM, prBodyPrompt, reviewPrompt, REVIEWER_SYSTEM } from './prompts'
+import { ciFixPrompt, commandPrompt, documentPrompt, FIXER_SYSTEM, prBodyPrompt, recheckPrompt, reviewPrompt, REVIEWER_SYSTEM } from './prompts'
 import { CI_GRACE_MS, CI_QUIET_MS, CI_TIMEOUT_MS, commitLines, fixRounds, gate, knownAgents, MAX_FIX_ROUNDS, parseFindings, PLUGIN, slug } from './run'
 
 export const REVIEWER = `${PLUGIN}:reviewer`
@@ -30,7 +30,7 @@ export const AGENT_SPECS = [
 ] as const
 
 // The steps whose start may spawn an agent; every step's fix round does.
-export const AGENT_STEPS: ReadonlySet<StepName> = new Set<StepName>(['review', 'test', 'document', 'lint'])
+export const AGENT_STEPS: ReadonlySet<StepName> = new Set<StepName>(['review', 'test', 'document', 'lint', 'recheck'])
 
 export type StepOutcome = { step: StepState; patch?: Partial<Run>; decision?: Decision; skipRest?: string }
 
@@ -84,6 +84,13 @@ function answerOf(name: StepName, answer: string): ParsedAnswer {
 
 const notAgentDriven = (name: StepName) => async (): Promise<StepOutcome> => failed(`${name} takes no agent answer`)
 
+const skipped = (reason: string): StepOutcome => ({ step: { status: 'skipped', reason } })
+
+const gateAnswer = (name: StepName) => async (_run: Run, answer: string): Promise<StepOutcome> => {
+  const parsed = answerOf(name, answer)
+  return 'outcome' in parsed ? parsed.outcome : { step: gate(parsed.findings) }
+}
+
 const rebase: StepDef = {
   name: 'rebase',
   async start(run) {
@@ -106,23 +113,35 @@ const rebase: StepDef = {
 
 const review: StepDef = {
   name: 'review',
-  start: async run => running(run, REVIEWER, reviewPrompt(run, await git.reviewDiff(run)), 'review'),
-  async check(_run, answer) {
-    const parsed = answerOf('review', answer)
-    return 'outcome' in parsed ? parsed.outcome : { step: gate(parsed.findings) }
+  async start(run) {
+    const reviewedHead = await git.headOf(run)
+    if (reviewedHead === undefined) return failed('cannot read the worktree HEAD')
+    return running(run, REVIEWER, reviewPrompt(run, await git.reviewDiff(run)), 'review', { reviewedHead })
   },
+  check: gateAnswer('review'),
 }
 
 const document: StepDef = {
   name: 'document',
   async start(run) {
-    if (!run.document) return { step: { status: 'skipped', reason: 'document: false in .no-mistakes.yaml' } }
+    if (!run.document) return skipped('document: false in .no-mistakes.yaml')
     return running(run, FIXER, documentPrompt(run, await git.diffStat(run)), 'document')
   },
-  async check(_run, answer) {
-    const parsed = answerOf('document', answer)
-    return 'outcome' in parsed ? parsed.outcome : { step: gate(parsed.findings) }
+  check: gateAnswer('document'),
+}
+
+const recheck: StepDef = {
+  name: 'recheck',
+  async start(run) {
+    const from = run.steps.review.status === 'passed' ? run.reviewedHead : undefined
+    if (from === undefined) return skipped('the review was skipped')
+    const head = await git.headOf(run)
+    if (head === undefined) return failed('cannot read the worktree HEAD')
+    if (head === from) return skipped('no commits since the review')
+    const commits = commitLines(await git.pipelineCommits(run, from)).join('\n')
+    return running(run, REVIEWER, recheckPrompt(run, from, commits, await git.reviewDiff(run, from)), 'recheck')
   },
+  check: gateAnswer('recheck'),
 }
 
 // A step that is a configured command: the mod runs it, a failure goes to the
@@ -283,6 +302,6 @@ export async function pollCi(run: Run, claimFix: ClaimFix): Promise<Polled | und
   return timedOut ? polled(pending) : undefined
 }
 
-export const STEPS: readonly StepDef[] = [rebase, review, commandStep('test'), document, commandStep('lint'), push, pr, ci]
+export const STEPS: readonly StepDef[] = [rebase, review, commandStep('test'), document, commandStep('lint'), recheck, push, pr, ci]
 
 export const STEP_DEFS: Record<StepName, StepDef> = Object.fromEntries(STEPS.map(s => [s.name, s])) as Record<StepName, StepDef>

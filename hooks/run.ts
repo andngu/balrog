@@ -19,6 +19,7 @@ export const STEP_ORDER: readonly StepName[] = [
   'test',
   'document',
   'lint',
+  'recheck',
   'push',
   'pr',
   'ci',
@@ -32,10 +33,11 @@ export function newRun(seed: RunSeed): Run {
   return { ...seed, head: seed.localHead, remoteHead: '', commands: {}, exclude: [], autofix: false, document: true, agents: [], steps, decisions: [] }
 }
 
+const LEGACY_RECHECK: StepState = { status: 'skipped', reason: 'run started before the recheck step existed' }
+
 export function fromStore(run: Run): Run {
-  return run.exclude === undefined || run.autofix === undefined || run.document === undefined
-    ? { ...run, exclude: run.exclude ?? [], autofix: run.autofix ?? false, document: run.document ?? true }
-    : run
+  if (run.exclude !== undefined && run.autofix !== undefined && run.document !== undefined && run.steps.recheck !== undefined) return run
+  return { ...run, exclude: run.exclude ?? [], autofix: run.autofix ?? false, document: run.document ?? true, steps: { ...run.steps, recheck: run.steps.recheck ?? LEGACY_RECHECK } }
 }
 
 const SETTLED = new Set<StepState['status']>(['passed', 'skipped'])
