@@ -1,0 +1,485 @@
+import type { CommandName, Commands, Run } from '../types'
+import { io } from './io'
+
+type Ran = { ok: boolean; code: number; out: string; err: string }
+
+async function exec(argv: readonly string[], cwd: string, stdin?: string): Promise<Ran> {
+  try {
+    const r = await io().run(argv, { cwd, timeoutMs: 600_000, ...(stdin === undefined ? {} : { stdin }) })
+    return { ok: r.exitCode === 0, code: r.exitCode, out: r.stdout.trim(), err: r.stderr.trim() }
+  } catch (e) {
+    return { ok: false, code: -1, out: '', err: String(e) }
+  }
+}
+
+// Every git the mod runs has the two config keys that execute repository code
+// pinned off, so a branch's husky hooksPath or a crafted gitdir's fsmonitor
+// runs nothing, in the worktree and in the user's repository alike; and
+// submodule.recurse, so no checkout, rebase or push reaches into a submodule.
+const HOOKS_OFF = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'submodule.recurse=false']
+
+export const git = (cwd: string, ...args: string[]) => exec(['git', ...HOOKS_OFF, ...args], cwd)
+
+export const gh = (cwd: string, args: string[], stdin?: string) => exec(['gh', ...args], cwd, stdin)
+
+// A commit git refuses for the user's own setup rather than for anything the
+// run did: no identity, or signing that is on and does not work.
+function setupProblem(err: string): string | undefined {
+  if (/tell me who you are|unable to auto-detect email|empty ident name|identity unknown/i.test(err)) {
+    return 'git identity not set, so git cannot commit: run git config --global user.name "<name>" and git config --global user.email "<email>", then run again'
+  }
+  if (/sign|failed to write commit object/i.test(err)) {
+    const line = err.split(/[\r\n]+/).find(l => /sign/i.test(l)) ?? err.split('\n')[0]
+    return `commit signing failed (commit.gpgsign is on and the signer did not sign): ${line?.trim().replace(/[:.]+$/, '')}. Make a signed git commit work in a terminal, then run again`
+  }
+  return undefined
+}
+
+export type RepoFacts = { repo: string; commonDir: string; branch: string; head: string; base: string }
+
+export type Inspected = { ok: true; facts: RepoFacts } | { ok: false; reason: string }
+
+async function realPathOf(path: string): Promise<string | undefined> {
+  try {
+    return (await io().stat(path)).realPath?.replace(/\/$/, '')
+  } catch {
+    return undefined
+  }
+}
+
+const absolute = (path: string, from: string) => (path.startsWith('/') ? path : `${from}/${path}`)
+
+export async function inspectRepo(cwd: string): Promise<Inspected> {
+  const top = await git(cwd, 'rev-parse', '--show-toplevel')
+  if (!top.ok) return { ok: false, reason: `${cwd} is not inside a git repository (${top.err || 'git rev-parse failed'}).` }
+  const repo = top.out
+  const branch = await git(repo, 'symbolic-ref', '--short', 'HEAD')
+  if (!branch.ok) {
+    return { ok: false, reason: 'HEAD is detached. Check out a feature branch first: git switch -c <branch>.' }
+  }
+  const head = await git(repo, 'rev-parse', '--verify', 'HEAD')
+  if (!head.ok) {
+    return { ok: false, reason: 'The branch has no commit yet. Commit your work first: git add -A && git commit -m "<message>".' }
+  }
+  const base = await defaultBranch(repo)
+  if (!base) {
+    return { ok: false, reason: 'No origin default branch found. Add the remote and fetch it: git remote add origin <url> && git fetch origin.' }
+  }
+  if (branch.out === base) {
+    return { ok: false, reason: `You are on ${base}, the default branch. Move the work to a feature branch: git switch -c <branch>.` }
+  }
+  const common = await git(repo, 'rev-parse', '--git-common-dir')
+  const commonDir = common.ok ? await realPathOf(absolute(common.out, repo)) : undefined
+  if (commonDir === undefined) return { ok: false, reason: `cannot place the repository's git dir (${common.err || 'stat failed'}).` }
+  return { ok: true, facts: { repo, commonDir, branch: branch.out, head: head.out, base } }
+}
+
+async function defaultBranch(repo: string): Promise<string | undefined> {
+  const ref = await git(repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')
+  if (ref.ok) return ref.out.replace(/^origin\//, '')
+  for (const candidate of ['main', 'master']) {
+    const r = await git(repo, 'rev-parse', '--verify', '--quiet', `refs/remotes/origin/${candidate}`)
+    if (r.ok) return candidate
+  }
+  return undefined
+}
+
+function hashOf(text: string): string {
+  let h = 5381
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) >>> 0
+  return h.toString(16).padStart(8, '0')
+}
+
+// The run's directory holds the worktree and the mod's own files beside it,
+// under a per-user cache root the mod keeps at mode 0700: no other local user
+// can pre-create or swap a path there, and a relative escape from the
+// worktree reaches nothing of the user's repository.
+export async function runDirectory(facts: RepoFacts, runId: string): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
+  const cache = (await io().cacheHome()) || `${(await io().home()) ?? ''}/.cache`
+  if (!cache.startsWith('/')) return { ok: false, reason: 'neither XDG_CACHE_HOME nor HOME names an absolute directory' }
+  const root = `${cache.replace(/\/$/, '')}/no-mistakes`
+  const made = await exec(['mkdir', '-p', '-m', '0700', root], '/')
+  if (!made.ok) return { ok: false, reason: `cannot create ${root}: ${made.err}` }
+  const closed = await exec(['chmod', '0700', root], '/')
+  if (!closed.ok) return { ok: false, reason: `cannot set ${root} to mode 0700: ${closed.err}` }
+  const name = facts.repo.split('/').pop() || 'repo'
+  return { ok: true, path: `${root}/${name}-${hashOf(facts.repo)}/${runId}` }
+}
+
+export const worktreeOf = (runDir: string) => `${runDir}/wt`
+
+export type Worktree = { path: string; gitFile: string; commonDir: string }
+
+export async function addWorktree(facts: RepoFacts, path: string): Promise<{ ok: true; worktree: Worktree } | { ok: false; reason: string }> {
+  const r = await git(facts.repo, 'worktree', 'add', '--detach', path, facts.head)
+  if (!r.ok) return { ok: false, reason: r.err || 'git worktree add failed' }
+  let gitFile: string
+  try {
+    gitFile = await io().read(`${path}/.git`)
+  } catch (e) {
+    return { ok: false, reason: `cannot read ${path}/.git: ${String(e)}` }
+  }
+  return { ok: true, worktree: { path, gitFile, commonDir: facts.commonDir } }
+}
+
+export async function removeWorktree(run: Run): Promise<Ran> {
+  return git(run.repo, 'worktree', 'remove', '--force', run.worktree)
+}
+
+// The worktree is the one place an agent writes, so before git reads it the
+// mod checks that `.git` still points where the mod left it: a rewritten
+// gitdir would make an in-worktree commit land on the user's branch, or load
+// a config of the agent's making.
+export async function intact(run: Run): Promise<string | undefined> {
+  let file: string | undefined
+  try {
+    file = await io().read(`${run.worktree}/.git`)
+  } catch {
+    file = undefined
+  }
+  if (file !== run.gitFile) return `${run.worktree}/.git was modified; the mod runs no git there any more`
+  const common = await exec(['git', ...HOOKS_OFF, 'rev-parse', '--git-common-dir'], run.worktree)
+  const real = common.ok ? await realPathOf(absolute(common.out, run.worktree)) : undefined
+  if (real !== run.commonDir) return `the worktree no longer belongs to ${run.commonDir} (${common.ok ? real : common.err})`
+  return undefined
+}
+
+async function wt(run: Run, ...args: string[]): Promise<Ran> {
+  const broken = await intact(run)
+  if (broken !== undefined) return { ok: false, code: -1, out: '', err: broken }
+  return git(run.worktree, ...args)
+}
+
+export type Pinned = { kind: 'reachable' } | { kind: 'pinned'; ref: string } | { kind: 'error'; detail: string }
+
+export const recoveryRef = (run: Run) => `refs/no-mistakes/recover/${run.id}`
+
+// Commits the worktree made beyond the rebased head (the pipeline's own
+// fixes) survive its removal under a ref of their own.
+export async function pinHead(run: Run): Promise<Pinned> {
+  const head = await headOf(run)
+  if (head === undefined) return { kind: 'error', detail: 'cannot read the worktree HEAD' }
+  const beyond = await wt(run, 'rev-list', '--count', `${run.head}..${head}`)
+  if (!beyond.ok) return { kind: 'error', detail: beyond.err || 'git rev-list failed' }
+  if (beyond.out === '0') return { kind: 'reachable' }
+  const ref = recoveryRef(run)
+  const r = await git(run.repo, 'update-ref', ref, head)
+  return r.ok ? { kind: 'pinned', ref } : { kind: 'error', detail: r.err || 'git update-ref failed' }
+}
+
+// Fetch and push run in the main repository, not the worktree: the refs are
+// shared, and a relative remote URL (`../origin.git`) resolves against the
+// directory git runs in. Only the two refs the run needs are fetched, never
+// with --prune: the user's other remote-tracking refs are theirs.
+async function fetchRefs(run: Run): Promise<{ ok: true; remoteHead: string } | { ok: false; detail: string }> {
+  const probe = await git(run.repo, 'ls-remote', '--exit-code', 'origin', `refs/heads/${run.branch}`)
+  if (!probe.ok && probe.code !== 2) return { ok: false, detail: `git ls-remote origin failed: ${probe.err}` }
+  const remoteHead = probe.ok ? (/^[0-9a-f]{40}/.exec(probe.out)?.[0] ?? '') : ''
+  const specs = [`+refs/heads/${run.base}:refs/remotes/origin/${run.base}`]
+  if (remoteHead !== '') specs.push(`+refs/heads/${run.branch}:refs/remotes/origin/${run.branch}`)
+  const fetched = await git(run.repo, 'fetch', '--no-tags', '--no-recurse-submodules', 'origin', ...specs)
+  if (!fetched.ok) return { ok: false, detail: `git fetch origin failed: ${fetched.err}` }
+  return { ok: true, remoteHead }
+}
+
+// `pull`: origin/<branch> holds commits the local branch has no version of.
+// `rewritten`: every remote-only commit has a local patch twin, so the local
+// branch is a rewrite the user has not pushed yet.
+export type Behind = 'pull' | 'rewritten'
+
+export type Rebased =
+  | { kind: 'rebased'; head: string; remoteHead: string; isEmpty: boolean; commands: Commands }
+  | { kind: 'behind'; remoteHead: string; how: Behind }
+  | { kind: 'conflict'; detail: string }
+  | { kind: 'error'; detail: string }
+
+async function howBehind(run: Run, remoteHead: string): Promise<Behind> {
+  const unmatched = await wt(run, 'rev-list', '--count', '--cherry-pick', '--right-only', `HEAD...${remoteHead}`)
+  return unmatched.ok && unmatched.out === '0' ? 'rewritten' : 'pull'
+}
+
+export async function rebase(run: Run): Promise<Rebased> {
+  const remote = await fetchRefs(run)
+  if (!remote.ok) return { kind: 'error', detail: remote.detail }
+  const remoteHead = remote.remoteHead
+  // Checked before the rebase rewrites the commits: afterwards nothing of
+  // origin/<branch> is an ancestor of HEAD even when the branch was up to date.
+  if (remoteHead !== '' && !(await isAncestor(run, remoteHead, 'HEAD'))) return { kind: 'behind', remoteHead, how: await howBehind(run, remoteHead) }
+  // Pinned against the user's rebase.updateRefs and rebase.autoStash: either
+  // would move the user's other branches or their stash from the worktree.
+  const rebased = await wt(run, 'rebase', '--no-update-refs', '--no-autostash', `origin/${run.base}`)
+  if (!rebased.ok) {
+    await wt(run, 'rebase', '--abort')
+    const detail = rebased.err || rebased.out
+    const setup = setupProblem(detail)
+    return setup === undefined ? { kind: 'conflict', detail: detail.slice(0, 2000) } : { kind: 'error', detail: setup }
+  }
+  const head = await headOf(run)
+  if (head === undefined) return { kind: 'error', detail: 'cannot read HEAD after rebase' }
+  const count = await wt(run, 'rev-list', '--count', `origin/${run.base}..HEAD`)
+  const changed = await wt(run, 'diff', '--quiet', `origin/${run.base}`, 'HEAD')
+  const isEmpty = count.out === '0' || changed.ok
+  const commands = parseCommands(await showOnBase(run, '.no-mistakes.yaml'))
+  if ('error' in commands) return { kind: 'error', detail: `.no-mistakes.yaml on origin/${run.base}: ${commands.error}` }
+  return { kind: 'rebased', head, remoteHead, isEmpty, commands }
+}
+
+export async function headOf(run: Run): Promise<string | undefined> {
+  const r = await wt(run, 'rev-parse', '--verify', 'HEAD')
+  return r.ok ? r.out : undefined
+}
+
+export async function push(run: Run): Promise<{ ok: true; head: string } | { ok: false; reason: string }> {
+  const remote = await fetchRefs(run)
+  if (!remote.ok) return { ok: false, reason: remote.detail }
+  if (remote.remoteHead !== run.remoteHead) {
+    return { ok: false, reason: `origin/${run.branch} moved to ${remote.remoteHead.slice(0, 12) || 'nothing'} since the run read it (${run.remoteHead.slice(0, 12) || 'no branch'}); it has commits this run never saw. Pull them into your branch and run again` }
+  }
+  const head = await headOf(run)
+  if (head === undefined) return { ok: false, reason: 'cannot read the worktree HEAD' }
+  if (!(await isAncestor(run, run.head, head))) {
+    return { ok: false, reason: `the worktree HEAD ${head.slice(0, 12)} does not descend from the reviewed head ${run.head.slice(0, 12)}; history was rewritten, nothing is pushed` }
+  }
+  const r = await git(
+    run.repo,
+    'push',
+    '--no-follow-tags',
+    '--recurse-submodules=no',
+    'origin',
+    `${head}:refs/heads/${run.branch}`,
+    `--force-with-lease=refs/heads/${run.branch}:${run.remoteHead}`,
+  )
+  return r.ok ? { ok: true, head } : { ok: false, reason: (r.err || r.out).slice(0, 2000) }
+}
+
+// External diff and textconv drivers are config-defined commands; neither is
+// wanted for text the reviewer reads. `--text` because the branch's own
+// .gitattributes can mark code `-diff` and hide it as "Binary files differ".
+const DIFF = ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--text']
+
+const DIFF_CAP = 120_000
+
+export async function diffStat(run: Run): Promise<string> {
+  const r = await wt(run, ...DIFF, '--stat', `origin/${run.base}...HEAD`)
+  return r.out
+}
+
+// The change under review, as text the reviewer is handed: the stat, then the
+// patch cut at DIFF_CAP characters with a note saying so.
+export async function reviewDiff(run: Run): Promise<string> {
+  const stat = await diffStat(run)
+  const patch = await wt(run, ...DIFF, `origin/${run.base}...HEAD`)
+  const text = patch.ok ? patch.out : `(git diff failed: ${patch.err})`
+  const cut = text.length > DIFF_CAP ? `${text.slice(0, DIFF_CAP)}\n[diff truncated at ${DIFF_CAP} characters of ${text.length}; read the files for the rest]` : text
+  return `${stat}\n\n${cut}`
+}
+
+export async function isAncestor(run: Run, older: string, newer: string): Promise<boolean> {
+  return (await wt(run, 'merge-base', '--is-ancestor', older, newer)).ok
+}
+
+// The pipeline's own config is read from the trusted default branch, never
+// from the branch under review.
+export async function showOnBase(run: Run, path: string): Promise<string | undefined> {
+  const r = await wt(run, 'show', `origin/${run.base}:${path}`)
+  return r.ok ? r.out : undefined
+}
+
+const COMMAND_NAMES: readonly CommandName[] = ['prepare', 'test', 'lint', 'format']
+
+// One value of the `commands:` block: a plain or quoted scalar on its own
+// line. Empty, `~` or `null` leaves the command unconfigured (undefined).
+function scalar(raw: string): string | undefined | { error: string } {
+  const rest = (after: string, value: string) => (/^(\s+#.*)?$/.test(after) ? value : { error: `unexpected text after the closing quote: ${after.trim()}` })
+  if (raw === '' || raw.startsWith('#')) return undefined
+  if (raw.startsWith('"') || raw.startsWith("'")) {
+    const quote = raw[0]!
+    let value = ''
+    for (let i = 1; i < raw.length; i++) {
+      const c = raw[i]!
+      if (quote === "'" && c === "'" && raw[i + 1] === "'") value += raw[++i]
+      else if (quote === '"' && c === '\\') {
+        const escaped = raw[++i]
+        if (escaped !== '"' && escaped !== '\\') return { error: 'only \\" and \\\\ escapes are read in a double-quoted value' }
+        value += escaped
+      } else if (c === quote) return rest(raw.slice(i + 1), value)
+      else value += c
+    }
+    return { error: 'the quote is not closed on the same line' }
+  }
+  if (/^[>|[\]{}*&!%@`,]|^[-?:](\s|$)/.test(raw)) return { error: 'block, flow, tagged and list values are not read; write the command on one plain line' }
+  const value = raw.replace(/\s#.*$/, '').trim()
+  if (/:(\s|$)/.test(value)) return { error: 'a plain value cannot hold ": "; quote the command' }
+  return value === '~' || /^null$/i.test(value) ? undefined : value
+}
+
+// The `commands:` block of .no-mistakes.yaml, read strictly: each entry one
+// of the four names with a one-line value. Anything else under `commands:`
+// (a block or flow value, a nested or unknown key, an open quote) is an error,
+// never a command: `test: >-` must not run `>-` and pass. The rest of the file
+// is not read.
+function parseCommands(text: string | undefined): Commands | { error: string } {
+  const commands: Commands = {}
+  if (text === undefined) return commands
+  let section = ''
+  let indent: string | undefined
+  const seen = new Set<CommandName>()
+  for (const line of text.split('\n').map(l => l.replace(/\s+$/, ''))) {
+    if (/^\s*(#.*)?$/.test(line)) continue
+    if (!/^\s/.test(line)) {
+      const top = /^([A-Za-z_]+):(.*)$/.exec(line)
+      section = top?.[1] ?? ''
+      if (section === 'commands' && !/^(\s+#.*)?$/.test(top?.[2] ?? '')) return { error: 'commands: must be followed by one entry per line' }
+      continue
+    }
+    if (section !== 'commands') continue
+    const entry = /^( +)([A-Za-z_]+):(?:\s+(.*))?$/.exec(line)
+    if (!entry || (indent !== undefined && entry[1] !== indent)) return { error: `cannot read "${line.trim()}" under commands: (a nested, continued or misaligned line)` }
+    indent = entry[1]
+    const name = COMMAND_NAMES.find(n => n === entry[2])
+    if (!name) return { error: `commands.${entry[2]} is not one of ${COMMAND_NAMES.join(', ')}` }
+    if (seen.has(name)) return { error: `commands.${name} is set twice` }
+    seen.add(name)
+    const value = scalar(entry[3] ?? '')
+    if (typeof value === 'object') return { error: `commands.${name}: ${value.error}` }
+    if (value !== undefined && value.trim() !== '') commands[name] = value.trim()
+  }
+  return commands
+}
+
+export type CommandRun = { exitCode: number; output: string }
+
+// A configured command is the repository's own, run as the user: this is the
+// trust upstream no-mistakes extends too, and the one place a run executes
+// code of the branch's ancestry.
+export async function runCommand(run: Run, command: string): Promise<CommandRun> {
+  try {
+    const r = await io().run(['sh', '-c', command], { cwd: run.worktree, timeoutMs: 600_000 })
+    return { exitCode: r.exitCode, output: `${r.stdout}\n${r.stderr}`.trim().slice(-6000) }
+  } catch (e) {
+    return { exitCode: -1, output: `could not run: ${String(e)}` }
+  }
+}
+
+// `prepare` runs once per worktree. What it changed in tracked files (a
+// lockfile) is put back; what it leaves untracked never reaches a commit,
+// since the mod commits only untracked files an agent wrote.
+export async function prepare(run: Run): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const command = run.commands.prepare
+  if (command === undefined || run.prepared) return { ok: true }
+  const ran = await runCommand(run, command)
+  if (ran.exitCode !== 0) return { ok: false, reason: `prepare command "${command}" exited ${ran.exitCode}:\n${ran.output}` }
+  const restored = await wt(run, 'restore', '--staged', '--worktree', '--', '.')
+  return restored.ok ? { ok: true } : { ok: false, reason: `cannot restore tracked files after prepare: ${restored.err}` }
+}
+
+// `isSetup`: git refused for the user's own setup (identity, signing), and
+// `detail` says what to fix.
+export type Committed = { kind: 'clean' } | { kind: 'committed'; head: string } | { kind: 'error'; detail: string; isSetup?: true }
+
+// One commit of the mod's, hooks off: every change to a tracked file, and of
+// the untracked files only those a run agent wrote (`run.written`) and the
+// repository does not ignore. What a command leaves behind (node_modules,
+// coverage, caches) stays out, and the user's own excludes still apply.
+export async function commitAll(run: Run, message: string): Promise<Committed> {
+  const tracked = await wt(run, 'add', '-u')
+  if (!tracked.ok) return { kind: 'error', detail: tracked.err }
+  if (run.written?.length) {
+    const fresh = await wt(run, '--literal-pathspecs', 'ls-files', '-z', '--others', '--exclude-standard', '--', ...run.written)
+    if (!fresh.ok) return { kind: 'error', detail: fresh.err }
+    const paths = fresh.out.split('\0').filter(p => p !== '')
+    const added = paths.length === 0 ? fresh : await wt(run, '--literal-pathspecs', 'add', '--', ...paths)
+    if (!added.ok) return { kind: 'error', detail: added.err }
+  }
+  if ((await wt(run, 'diff', '--cached', '--quiet')).ok) return { kind: 'clean' }
+  const committed = await wt(run, 'commit', '-q', '-m', message)
+  if (!committed.ok) {
+    const detail = committed.err || committed.out
+    const setup = setupProblem(detail)
+    return setup === undefined ? { kind: 'error', detail } : { kind: 'error', detail: setup, isSetup: true }
+  }
+  const head = await headOf(run)
+  return head === undefined ? { kind: 'error', detail: 'cannot read HEAD after the commit' } : { kind: 'committed', head }
+}
+
+// The mod's own commits since the rebased head, as `<sha> <subject>` and a
+// stat each, for the pane and the PR body.
+export async function pipelineCommits(run: Run): Promise<string> {
+  const r = await wt(run, 'log', '--no-color', '--no-show-signature', '--format=%h %s', '--stat', `${run.head}..HEAD`)
+  return r.ok ? r.out : ''
+}
+
+export async function ghReady(cwd: string): Promise<string | undefined> {
+  const r = await gh(cwd, ['auth', 'status'])
+  if (r.ok) return undefined
+  return r.err.includes('not') || r.out.includes('not') || r.err === '' ? 'gh is missing or not authenticated' : r.err.slice(0, 300)
+}
+
+export type PrRef = { url: string; number: number }
+
+export async function prView(run: Run): Promise<PrRef | undefined> {
+  const r = await gh(run.repo, ['pr', 'view', run.branch, '--json', 'url,number'])
+  if (!r.ok) return undefined
+  try {
+    const v = JSON.parse(r.out) as { url?: unknown; number?: unknown }
+    return typeof v.url === 'string' && typeof v.number === 'number' ? { url: v.url, number: v.number } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export async function prCreate(run: Run, title: string, body: string): Promise<PrRef | { error: string }> {
+  const r = await gh(run.repo, ['pr', 'create', '--base', run.base, '--head', run.branch, '--title', title, '--body-file', '-'], body)
+  if (!r.ok) return { error: (r.err || r.out).slice(0, 1000) }
+  const url = r.out.split('\n').find(line => line.startsWith('https://')) ?? r.out
+  return (await prView(run)) ?? { url, number: Number(url.split('/').pop()) || 0 }
+}
+
+export async function prHead(run: Run, number: number): Promise<string | undefined> {
+  const r = await gh(run.repo, ['pr', 'view', String(number), '--json', 'headRefOid'])
+  if (!r.ok) return undefined
+  try {
+    const v = JSON.parse(r.out) as { headRefOid?: unknown }
+    return typeof v.headRefOid === 'string' ? v.headRefOid : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export type Check = { name: string; bucket: string; state: string }
+
+export async function prChecks(run: Run, number: number): Promise<Check[] | { error: string }> {
+  const r = await gh(run.repo, ['pr', 'checks', String(number), '--json', 'name,state,bucket'])
+  if (!r.ok) {
+    if (/no checks reported/i.test(r.err + r.out)) return []
+    return { error: (r.err || r.out).slice(0, 500) }
+  }
+  try {
+    const list = JSON.parse(r.out) as unknown
+    return Array.isArray(list)
+      ? list.map(c => ({ name: String((c as Check).name), bucket: String((c as Check).bucket), state: String((c as Check).state) }))
+      : { error: 'gh pr checks returned no list' }
+  } catch (e) {
+    return { error: `gh pr checks output does not parse: ${String(e)}` }
+  }
+}
+
+// How many Actions workflows the repository defines; undefined when gh cannot
+// say. Zero is the one signal that no check will ever report.
+export async function workflowCount(run: Run): Promise<number | undefined> {
+  const r = await gh(run.repo, ['api', 'repos/{owner}/{repo}/actions/workflows', '--jq', '.total_count'])
+  return r.ok && /^\d+$/.test(r.out) ? Number(r.out) : undefined
+}
+
+export async function failedLog(run: Run): Promise<string> {
+  const runs = await gh(run.repo, ['run', 'list', '--branch', run.branch, '--status', 'failure', '--limit', '1', '--json', 'databaseId'])
+  let id: number | undefined
+  try {
+    id = (JSON.parse(runs.out) as { databaseId?: number }[])[0]?.databaseId
+  } catch {
+    id = undefined
+  }
+  if (id === undefined) return ''
+  const log = await gh(run.repo, ['run', 'view', String(id), '--log-failed'])
+  return log.out.slice(-6000)
+}

@@ -1,0 +1,39 @@
+# no-mistakes
+
+A Claude Code mod port of [kunchenguid/no-mistakes](https://github.com/kunchenguid/no-mistakes) (MIT).
+
+`/no-mistakes [intent]` gates the current feature branch: rebase onto `origin/<default>`, adversarial review, test, document, lint, push with a lease, PR, CI watch. Every step runs in a disposable detached worktree under `~/.cache/no-mistakes/` (mode 0700), never in your checkout. Blocking findings park the run in a pane where you fix, approve, skip or abort.
+
+## Who runs what
+
+- The mod runs every `git` call itself, always with `-c core.hooksPath=/dev/null -c core.fsmonitor=false -c submodule.recurse=false`, so no hook of the branch's making (a husky `core.hooksPath`, a crafted gitdir) executes. The rebase passes `--no-update-refs --no-autostash`, the push `--no-follow-tags --recurse-submodules=no`, the fetch `--no-tags --no-recurse-submodules`, so your `rebase.updateRefs`, `rebase.autoStash` and `push.followTags` cannot move your other branches, your stash or your tags. It fetches only `refs/heads/<default>` and `refs/heads/<branch>`, never with `--prune`. Before any git in the worktree it checks that `<worktree>/.git` still holds what it wrote and that `git rev-parse --git-common-dir` is still your repository; otherwise it refuses and the run fails.
+- The mod commits every change to a tracked file, and of the untracked files only those a pipeline agent wrote with `Write`, `Edit` or `NotebookEdit`, minus what your ignore rules (your global `core.excludesFile` included) ignore. What a configured command leaves behind (`node_modules`, `coverage`, caches) is never committed. The pane lists the mod's own commits once the push step has run, and the PR body ends with the same list.
+- The reviewer gets the diff in its prompt (`git diff --text`, so a `-diff` attribute in the branch cannot hide code) and `Read`, `Grep`, `Glob` over the worktree. Nothing else.
+- The fixer gets `Read`, `Edit`, `Write` over the worktree (`Grep` and `Glob` too where the build registers them beside `Bash`; the native Linux build does not, so its prompt names the files the change touches), and a `Bash` that the mod lets through only for the configured test, lint and format commands, spelled exactly as `cd '<worktree>' && <command>`. It has no git: the mod commits whatever it changed as soon as it answers.
+- `tool.call` refuses a pipeline agent, whatever your rules say, any read or write outside the worktree, anything at a `.git` entry (in any letter case), a write through a link that resolves nowhere, `Grep` or `Glob` without a path, a `Glob` pattern that is absolute or climbs with `..`, and any `Bash` command that is not a configured one.
+- `tool.check` consults the engine first and keeps any deny or ask that stands on your settings rules, a PreToolUse hook or a permission setting. Only then does it allow in-worktree calls without an ask.
+- The PR body is written by a model from the intent, the diff stat, the step statuses, your decisions and the blocking findings you approved as is. Agent-written text goes in marked as untrusted data, and informational findings stay out of it.
+
+## Configuration
+
+`.no-mistakes.yaml` is read from `origin/<default>` only, never from the branch under review:
+
+```yaml
+commands:
+  prepare: npm ci          # once per worktree, before the first command
+  test: node add.test.mjs  # the test step; no command parks the step
+  lint: npm run lint       # the lint step; no command parks the step
+  format: prettier -w .    # before the push; its changes become a commit
+```
+
+Each value is one line, plain or quoted (`"..."` reads only `\"` and `\\` escapes). A block (`>-`, `|`), flow (`[...]`, `{...}`), nested or unknown key, or an unclosed quote fails the run at the rebase step with the line it could not read; it never runs as a command.
+
+## Trust model
+
+What the mod runs on your behalf is not held to your permission rules or sandbox:
+
+- The configured commands run as `sh -c <command>` in the worktree, as you, with no sandbox and your full environment (`GH_TOKEN`, cloud credentials, SSH agent). They run code the branch can change: `npm test` runs the branch's tests and `package.json` scripts, and the fixer may have edited both. Configure only commands you would run by hand on this branch.
+- The mod's own `git` and `gh` calls (fetch, rebase, commit, push, `gh pr create`, `gh pr checks`, `gh run view`) run outside your permission rules, with your credentials.
+- A failing test or lint command goes to the fixer once with the output; the mod commits the fixer's edits and re-runs the command, and a command that still fails parks the step. The fixer's commits are not reviewed again by the reviewer.
+
+Known limitations: hooks are off for every git call, so a `pre-push` hook such as git-lfs's does not run, and LFS objects of the branch are not uploaded by the push. Run `git lfs push origin <branch>` yourself where the repository uses LFS. A tool output too large for the transcript may be saved by the engine outside the worktree, where the agents cannot read it.
