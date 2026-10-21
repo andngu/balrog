@@ -798,6 +798,24 @@ test('/no-mistakes-fix with ids sends exactly those findings to one fixer', asyn
   expect(w.spawns[1]!.prompt).not.toContain('off by one')
 })
 
+test('/no-mistakes-fix with ids that loses to a concurrent approve leaves the selection as it was', async ($, on) => {
+  const w = world($, on)
+  const selections: (readonly string[])[] = []
+  on('state.set', { plugin: PLUGIN, key: 'selected' }, (_$, e, next) => {
+    selections.push(e.value)
+    return next(e)
+  })
+  await start($)
+  await complete($, 'agent-1', answer(THREE))
+  expect(selections.at(-1)).toEqual(['r1', 'r2'])
+  const parked = selections.length
+  const [approved, fixed] = await Promise.all([say($, 'no-mistakes-approve'), say($, 'no-mistakes-fix', 'r2 r3')])
+  expect(approved).toContain('Approved review as is.')
+  expect(fixed).toContain('no-mistakes refused: review was decided meanwhile.')
+  expect(selections).toHaveLength(parked)
+  expect(lastRun(w).decisions).toEqual([{ step: 'review', findingIds: ['r1', 'r2', 'r3'], verdict: 'approve' }])
+})
+
 test('/no-mistakes-fix with an unknown id, or with nothing selected, refuses and changes nothing', async ($, on) => {
   const w = world($, on)
   await start($)
@@ -827,9 +845,26 @@ test('/no-mistakes-approve records the decision the pane\'s Approve records and 
   const run = lastRun(w)
   expect(run.decisions).toEqual([{ step: 'review', findingIds: ['r1'], verdict: 'approve' }])
   expect(run.steps.review).toMatchObject({ status: 'passed', note: 'approved by the human', findings: [{ id: 'r1' }] })
-  // The reply does not wait for the next step: its fixer starts in the background.
   for (let i = 0; i < 500 && lastRun(w).steps.document.status !== 'running'; i++) await new Promise<void>(done => setTimeout(done, 2))
   expect(lastRun(w).steps.document).toMatchObject({ status: 'running', agentId: 'agent-2' })
+})
+
+test('/no-mistakes-approve replies while the next step is still starting', async ($, on) => {
+  const w = world($, on)
+  let open: (() => void) | undefined
+  let reached: (() => void) | undefined
+  const gate = new Promise<void>(r => { open = r })
+  const testing = new Promise<void>(r => { reached = r })
+  w.rules.push(async line => (line === 'sh -c npm test' ? (reached!(), await gate, {}) : undefined))
+  await parkReview($, w)
+  const reply = say($, 'no-mistakes-approve')
+  await testing
+  const early = await Promise.race([reply, new Promise<string>(r => setTimeout(() => r('no reply yet'), 50))])
+  const testStep = lastRun(w).steps.test
+  open!()
+  expect(early).toBe('Approved review as is. The run continues in the background; /no-mistakes-status shows where it is.')
+  expect(testStep).toMatchObject({ status: 'starting' })
+  await reply
 })
 
 test('/no-mistakes-abort ends the run and removes the worktree; later decisions are refused', async ($, on) => {
