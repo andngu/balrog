@@ -1,6 +1,6 @@
 {
   "name": "no-mistakes",
   "version": "0.1.0",
-  "description": "Gate a feature branch: review, test, document, lint, push, PR and CI run by subagents in a disposable worktree, with a pane for the human calls.",
+  "description": "Gate a feature branch: review, test, document, lint, recheck, push, PR and CI run by subagents in a disposable worktree, with a pane for the human calls.",
   "types": "./types/index.d.ts"
 }
