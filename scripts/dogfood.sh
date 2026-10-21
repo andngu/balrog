@@ -52,7 +52,8 @@ case "$cmd" in
     git clone -q --branch "$branch" -- "$repo" "$tmp/repo" || { rm -rf "$tmp"; die "clone of $branch failed"; }
     mv "$tmp/repo" "$dir"
     rmdir "$tmp"
-    inner="claude --plugin-dir $(printf %q "$dir"); echo EXIT \$?; sleep 3600"
+    passive="This session hosts the no-mistakes mod for a dogfood run. Do not edit files, run commands, spawn agents or act on run notifications on your own. When a notification or a message arrives, answer in one line at most and wait."
+    inner="claude --plugin-dir $(printf %q "$dir") --append-system-prompt $(printf %q "$passive"); echo EXIT \$?; sleep 3600"
     tmux new-session -d -s "$session" -x 200 -y 50 -c "$dir" "bash -lc $(printf %q "$inner")"
     ready=
     for _ in $(seq 1 60); do
