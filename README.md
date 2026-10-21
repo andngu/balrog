@@ -9,7 +9,7 @@ A Claude Code mod port of [kunchenguid/no-mistakes](https://github.com/kunchengu
 You need:
 
 - Claude Code with mod support.
-- git 2.40 or newer, for the attribute reads described under [Who runs what](#who-runs-what).
+- git. Version 2.40 or newer keeps the base-attribute protection described under [Who runs what](#who-runs-what). Older git works without it.
 - `gh`, logged in (`gh auth status`), for the PR and CI steps.
 
 Add this repository as a marketplace, then install the mod from it:
@@ -21,7 +21,7 @@ claude plugin install no-mistakes@no-mistakes
 
 To install from a local clone, give its path to `marketplace add` instead of `andngu/no-mistakes`.
 
-The install enables the mod. Check with `claude plugin list`; the entry reads `Status: enabled`. If it reads `disabled`, run `claude plugin enable no-mistakes@no-mistakes`. Restart Claude Code to load the mod.
+The install enables the mod. Check with `claude plugin list`; the entry reads `Status: ✔ enabled`. If it reads `Status: ✘ disabled`, run `claude plugin enable no-mistakes@no-mistakes`. Restart Claude Code to load the mod.
 
 ## Quick start
 
