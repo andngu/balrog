@@ -297,13 +297,16 @@ export async function press(verdict: Verdict | 'abort', select: readonly string[
     if (unknown.length > 0) return refused(`${unknown.join(', ')}: no such finding at ${name}; its findings are ${valid.join(', ')}.`)
     const round = fixRounds(run, name) + 1
     if (round > MAX_FIX_ROUNDS) return refused(`${name} already had ${MAX_FIX_ROUNDS} fix rounds; approve, skip or abort.`)
-    const selected = select.length > 0 ? await io().writeSelected(() => [...select]) : await io().readSelected()
-    const findings = state.findings.filter(f => selected.includes(f.id))
+    // The selection is read here but written only once the claim is won, so a
+    // refused press (lost to a concurrent decision) changes nothing.
+    const chosen = select.length > 0 ? [...select] : await io().readSelected()
+    const findings = state.findings.filter(f => chosen.includes(f.id))
     if (findings.length === 0) return refused(`Select at least one finding of ${name} to fix, in the pane or with /no-mistakes-fix <ids>.`)
     const decision = { step: name, findingIds: findings.map(f => f.id), verdict } as const
     const startedAt = await io().now()
     const claimed = await claim(name, parked, r => setStep(decide(r, decision), name, { status: 'fixing', round, startedAt }))
     if (!claimed) return lost(name)
+    if (select.length > 0) await io().writeSelected(() => [...select])
     ensurePolling()
     let step: StepState
     try {
@@ -312,7 +315,9 @@ export async function press(verdict: Verdict | 'abort', select: readonly string[
     } catch (e) {
       step = { status: 'failed', reason: `could not start the fixer: ${String(e)}` }
     }
-    await settle(name, { step }, isClaimed)
+    const settled = await settle(name, { step }, isClaimed)
+    if (settled === 'lost') return lost(name)
+    if (step.status === 'failed') return done(`Could not send ${decision.findingIds.join(', ')} of ${name} to the fixer: ${step.reason}.`)
     return done(`Sent ${decision.findingIds.join(', ')} of ${name} to the fixer, round ${round} of ${MAX_FIX_ROUNDS}.`)
   }
   const decision = { step: name, findingIds: state.findings.map(f => f.id), verdict } as const
