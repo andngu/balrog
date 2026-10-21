@@ -39,6 +39,7 @@ export const register: Register = on => {
       spawn: args => $.agent.spawn(args),
       agents: () => $.agent.list(),
       stop: agentId => $.tool.call({ tool: 'TaskStop', task_id: agentId }),
+      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       home: () => $.env.get('HOME'),
       cacheHome: () => $.env.get('XDG_CACHE_HOME'),
       read: path => $.fs.read(path),

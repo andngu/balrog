@@ -18,7 +18,8 @@ export type Finding = {
 export type StepState =
   | { status: 'pending' }
   | { status: 'starting'; startedAt: number }
-  | { status: 'running'; agentId?: string; startedAt: number }
+  // `reasked`: the agent's answer was unreadable and it was asked once more.
+  | { status: 'running'; agentId?: string; startedAt: number; reasked?: true }
   | { status: 'fixing'; agentId?: string; round: number; startedAt: number }
   | { status: 'parked'; findings: Finding[] }
   | { status: 'passed'; note?: string; findings: Finding[] }

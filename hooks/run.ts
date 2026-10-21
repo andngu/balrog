@@ -98,15 +98,51 @@ export function slug(text: string): string {
 
 export type Parsed = { findings: Finding[] } | { error: string }
 
+// The JSON object starting at `start`, through its matching brace.
+function objectAt(text: string, start: number): string | undefined {
+  let depth = 0
+  let inString = false
+  for (let i = start; i < text.length; i++) {
+    const c = text[i]
+    if (inString) {
+      if (c === '\\') i++
+      else if (c === '"') inString = false
+    } else if (c === '"') inString = true
+    else if (c === '{') depth++
+    else if (c === '}' && --depth === 0) return text.slice(start, i + 1)
+  }
+  return undefined
+}
+
+// An agent that drops the fence still ends with the object (`Findings JSON:`
+// then a bare `{"findings":[...]}`): the last one that parses is the answer.
+function bareFindings(answer: string): unknown {
+  const starts = [...answer.matchAll(/\{\s*"findings"\s*:/g)].map(m => m.index)
+  for (const start of starts.reverse()) {
+    const text = objectAt(answer, start)
+    if (text === undefined) continue
+    try {
+      return JSON.parse(text)
+    } catch {
+      continue
+    }
+  }
+  return undefined
+}
+
 export function parseFindings(answer: string, step: StepName): Parsed {
   const blocks = [...answer.matchAll(/```json\s*\n([\s\S]*?)\n\s*```/g)]
   const last = blocks[blocks.length - 1]?.[1]
-  if (last === undefined) return { error: 'the answer has no ```json block' }
   let raw: unknown
-  try {
-    raw = JSON.parse(last)
-  } catch (e) {
-    return { error: `the json block does not parse: ${String(e)}` }
+  if (last === undefined) {
+    raw = bareFindings(answer)
+    if (raw === undefined) return { error: 'the answer has no ```json block and no {"findings": ...} object' }
+  } else {
+    try {
+      raw = JSON.parse(last)
+    } catch (e) {
+      return { error: `the json block does not parse: ${String(e)}` }
+    }
   }
   if (typeof raw !== 'object' || raw === null || !Array.isArray((raw as { findings?: unknown }).findings)) {
     return { error: 'the json block has no "findings" array' }

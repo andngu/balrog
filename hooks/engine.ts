@@ -1,8 +1,8 @@
 import type { Outcome, Run, StepName, StepState, Verdict } from '../types'
 import * as git from './git'
 import { io } from './io'
-import { fixPrompt } from './prompts'
-import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isClaimed, knownAgents, MAX_FIX_ROUNDS, newRun, PLUGIN, setStep, skipRest, statusText, timeoutFinding } from './run'
+import { fixPrompt, reaskPrompt } from './prompts'
+import { AGENT_TIMEOUT_MS, agentOf, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isClaimed, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, setStep, skipRest, statusText, timeoutFinding } from './run'
 import { AGENT_STEPS, commitMessage, FIXER, pollCi, spawn, STEP_DEFS } from './steps'
 import type { StepOutcome } from './steps'
 
@@ -183,8 +183,11 @@ export async function onAgentAnswer(agentId: string, answer: string, reason: str
   }
   let outcome: StepOutcome
   const committed = await git.commitAll(run, commitMessage(name, state))
+  const parsed = state.status === 'running' && !state.reasked ? parseFindings(answer, name) : undefined
   if (committed.kind === 'error') {
     outcome = { step: { status: 'failed', reason: committed.isSetup ? `${name}: ${committed.detail}` : `${name}: the agent's edits could not be committed: ${committed.detail}` } }
+  } else if (parsed && 'error' in parsed) {
+    return reask(name, agentId, parsed.error)
   } else {
     try {
       outcome = state.status === 'fixing' ? { step: { status: 'pending' } } : await STEP_DEFS[name].check(run, answer)
@@ -193,6 +196,20 @@ export async function onAgentAnswer(agentId: string, answer: string, reason: str
     }
   }
   if ((await settle(name, outcome, mine)) === 'continue') await advance()
+}
+
+// An answer the mod cannot read gets one more chance: the same agent, which
+// still holds its work in context, is asked for the findings block alone.
+// Its next answer is checked as usual, and an unreadable one fails closed.
+async function reask(name: StepName, agentId: string, error: string): Promise<void> {
+  const mine: From = s => agentOf(s) === agentId
+  const asked = await claim(name, s => mine(s) && s.status === 'running' && !s.reasked, r => {
+    const s = r.steps[name]
+    return s.status === 'running' ? setStep(r, name, { ...s, reasked: true }) : r
+  })
+  if (!asked) return
+  const sent = await io().send(agentId, reaskPrompt(error)).catch((e: unknown) => ({ isDelivered: false as const, reason: String(e) }))
+  if (!sent.isDelivered) await settle(name, { step: { status: 'failed', reason: `${name} answer is unreadable (${error}) and the agent could not be asked again (${sent.reason}); fail closed` } }, mine)
 }
 
 export async function toggle(id: string): Promise<void> {
