@@ -19,8 +19,11 @@ let ident = true
 const IDENT = { GIT_AUTHOR_NAME: 'nm', GIT_AUTHOR_EMAIL: 'nm@x', GIT_COMMITTER_NAME: 'nm', GIT_COMMITTER_EMAIL: 'nm@x' }
 const sh = (argv: readonly string[], cwd: string, stdin?: string) =>
   new Promise<{ exitCode: number; stdout: string; stderr: string; isStdoutTruncated: false; isStderrTruncated: false }>(resolve => {
-    const env: Record<string, string | undefined> = { ...process.env, HOME: home, ...(ident ? IDENT : {}) }
+    const env: Record<string, string | undefined> = { ...process.env, HOME: home, GIT_CONFIG_NOSYSTEM: '1', ...(ident ? IDENT : {}) }
     if (!ident) for (const k of [...Object.keys(IDENT), 'EMAIL']) delete env[k]
+    // Only $HOME/.gitconfig: a GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM or
+    // GIT_CONFIG_COUNT of the caller's would bypass the isolated HOME.
+    for (const k of Object.keys(env)) if (k.startsWith('GIT_CONFIG') && k !== 'GIT_CONFIG_NOSYSTEM') delete env[k]
     const child = spawn(argv[0]!, argv.slice(1), { cwd, env })
     let stdout = ''
     let stderr = ''
