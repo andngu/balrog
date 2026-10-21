@@ -6,12 +6,21 @@ import { onAgentAnswer, ownerOf, resume, startRun } from './engine'
 import { asCall, isAllowed, judge, writtenPath } from './guard'
 import { bind, io } from './io'
 import { registerPane } from './pane'
-import { isRetired, knownAgents, PANE, statusText } from './run'
+import { fromStore, isRetired, knownAgents, PANE, statusText } from './run'
 import { AGENT_SPECS, FIXER, REVIEWER } from './steps'
 
 // The state library's scan needs each atom written in the file that reads it.
 const runAtom = atom({ plugin: 'no-mistakes', key: 'run' } as const, null)
 const selectedAtom = atom({ plugin: 'no-mistakes', key: 'selected' } as const, [])
+
+type Engine = Parameters<typeof read>[0]
+
+// The run in the store, read as this build understands it: one persisted before
+// review.exclude has no `exclude` field, and every reader gets the list.
+async function storedRun($: Engine): Promise<Run | null> {
+  const run = await read($, runAtom)
+  return run && fromStore(run)
+}
 
 type Owner = { run: Run; owned: 'ours' | 'unknown' } | undefined
 
@@ -55,15 +64,15 @@ export const register: Register = on => {
       toast: text => $.ui.toast(text),
       notify: text => $.ui.notify(text),
       invalidate: () => $.ui.invalidate('ui.render'),
-      readRun: () => read($, runAtom),
-      writeRun: change => update($, runAtom, change),
+      readRun: () => storedRun($),
+      writeRun: change => update($, runAtom, run => change(run && fromStore(run))),
       readSelected: () => read($, selectedAtom),
       writeSelected: change => update($, selectedAtom, change),
     })
     await $.command.register({ name: 'no-mistakes', description: 'Gate this branch: review, test, document, lint, push, PR, CI in a disposable worktree', argumentHint: '[intent]' })
     await $.command.register({ name: 'no-mistakes-status', description: 'Reopen the no-mistakes run pane' })
     for (const spec of AGENT_SPECS) await $.agent.register(spec)
-    $.ui.status(statusText(await read($, runAtom)))
+    $.ui.status(statusText(await storedRun($)))
     await resume()
     return next(e)
   })
@@ -73,7 +82,7 @@ export const register: Register = on => {
   // whatever the user's own rules would allow. A guard that fails refuses
   // only an agent the run is known to have spawned.
   on('tool.call', async ($, e, next) => {
-    const owner = await ownerOfCall(await read($, runAtom), e.agentId)
+    const owner = await ownerOfCall(await storedRun($), e.agentId)
     if (!owner) return next(e)
     // Only the current step's agent acts: one whose step moved on (timed out
     // and could not be stopped, say) keeps no access, nor any once the run ends.
@@ -113,7 +122,7 @@ export const register: Register = on => {
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
     if (e.agentId === undefined || isUsersVerdict(verdict) || e.ceiling !== undefined) return verdict
-    const owner = await ownerOfCall(await read($, runAtom), e.agentId)
+    const owner = await ownerOfCall(await storedRun($), e.agentId)
     if (!owner || owner.owned !== 'ours' || isRetired(owner.run, e.agentId)) return verdict
     const allowed = await isAllowed(asCall(e), owner.run.worktree, owner.run.commands, path => $.fs.stat(path, { resolve: true }))
     return allowed ? { decision: 'allow', reason: 'no-mistakes: inside the run worktree' } : verdict

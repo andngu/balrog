@@ -66,7 +66,7 @@ type World = {
   pane: (surface: RenderSurface, props?: Partial<typeof PANE_PROPS>) => Promise<string>
 }
 
-type Options = { dangling?: string[]; branch?: string; gh?: boolean; config?: string; branchConfig?: string; realPaths?: Record<string, string>; missing?: string[]; instantReview?: string; foreignReview?: true; origin?: string }
+type Options = { dangling?: string[]; branch?: string; gh?: boolean; config?: string; branchConfig?: string; realPaths?: Record<string, string>; missing?: string[]; instantReview?: string; foreignReview?: true; origin?: string; legacy?: true }
 
 // `calls` holds each command with git's `-c key=value` pairs stripped, so a
 // rule or an assertion reads the command itself; `raw` keeps them.
@@ -251,8 +251,10 @@ function world($: Engine, on: On, options: Options = {}): World {
   })
   on('state.set', { plugin: PLUGIN, key: 'run' }, (_$, e, next) => {
     if (w.recordFails && e.value?.written?.length) return { deny: 'the state store is full' }
-    if (e.value) w.runs.push(e.value)
-    return next(e)
+    // A run stored before review.exclude existed has no `exclude` field.
+    const value = options.legacy && e.value ? (({ exclude: _, ...rest }) => rest as Run)(e.value) : e.value
+    if (value) w.runs.push(value)
+    return next({ ...e, value })
   })
   return w
 }
@@ -2139,6 +2141,16 @@ test('a branch whose only change is excluded is still reviewed, and the reviewer
   expect(lastRun(w).steps.rebase).toMatchObject({ status: 'passed', note: 'rebased onto origin/main' })
   expect(w.spawns).toHaveLength(1)
   expect(w.spawns[0]!.prompt).toContain('(every changed file matches review.exclude)')
+})
+
+test('a run stored before review.exclude existed (no exclude field) still reviews, with the diff whole', async ($, on) => {
+  const w = world($, on, { legacy: true })
+  await start($)
+  expect(lastRun(w).exclude).toBeUndefined()
+  expect(w.calls).toContain(DIFF)
+  expect(w.calls.some(c => c.includes(':(exclude)'))).toBe(false)
+  expect(w.spawns).toHaveLength(1)
+  expect(w.spawns[0]!.prompt).not.toContain('review.exclude')
 })
 
 test('a review.exclude item keeps a quoted # and drops a plain comment, and may sit at the key\'s indent', async ($, on) => {
