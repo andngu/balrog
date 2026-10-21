@@ -3341,3 +3341,58 @@ test('the recheck reviewer gets the guide before the commits, and the fixers and
   expect(w.spawns.map(s => s.prompt.includes(GUIDE_TEXT))).toEqual([true, false, false, true, false, true])
   expect(w.completions[w.completions.length - 1]).not.toContain(GUIDE_TEXT)
 })
+
+test('a recheck fix round runs the test command again when the test step passed after a human fix round', async ($, on) => {
+  const w = world($, on)
+  let tests = 0
+  w.rules.push(line => (line === 'sh -c npm test' && ++tests <= 2 ? { exitCode: 1, stdout: '1 failing' } : undefined))
+  w.rules.push(line => (line === RECHECK_LOG ? { stdout: PIPELINE_LOG[w.worktreeHead] ?? '' } : undefined))
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  w.dirty = true
+  w.worktreeHead = FIXED
+  await complete($, 'agent-2', answer([]))
+  expect(lastRun(w).steps.test).toMatchObject({ status: 'parked', findings: [{ id: 'test:command' }] })
+  await pressOnce($, 'fix')
+  w.dirty = true
+  await complete($, 'agent-3', 'Fixed.')
+  expect(lastRun(w).steps.test).toMatchObject({ status: 'passed', note: 'npm test exited 0' })
+  await complete($, 'agent-4', answer([]))
+  expect(lastRun(w).steps.recheck).toMatchObject({ status: 'running', agentId: 'agent-5' })
+  await complete($, 'agent-5', answer([C1]))
+  await pressOnce($, 'fix')
+  w.dirty = true
+  w.worktreeHead = FIXED_AGAIN
+  await complete($, 'agent-6', 'Fixed.')
+  const run = lastRun(w)
+  expect(run.decisions).toEqual([
+    { step: 'test', findingIds: ['test:command'], verdict: 'fix' },
+    { step: 'recheck', findingIds: ['c1'], verdict: 'fix' },
+  ])
+  expect(tests).toBe(4)
+  expect(run.steps.test).toMatchObject({ status: 'passed', note: 'npm test exited 0' })
+  expect(run.steps.recheck).toMatchObject({ status: 'running', agentId: 'agent-7' })
+})
+
+test('the recheck fails closed when git cannot produce the recheck diff', async ($, on) => {
+  const w = world($, on)
+  w.rules.push(line => (line === RECHECK_DIFF ? { exitCode: 128, stderr: 'fatal: bad object' } : undefined))
+  await toRecheck($, w)
+  const run = lastRun(w)
+  expect(run.steps.recheck).toMatchObject({ status: 'failed', reason: expect.stringContaining('cannot read the pipeline\'s commits to recheck') })
+  expect(run.note).toContain('git diff failed: fatal: bad object')
+  expect(run.outcome).toBe('failed')
+  expect(w.spawns).toHaveLength(3)
+  expect(w.calls.some(c => c.startsWith('git push'))).toBe(false)
+})
+
+test('the review fails closed when git cannot produce the diff stat', async ($, on) => {
+  const w = world($, on)
+  w.rules.push(line => (line.replace('git --attr-source=origin/main ', 'git ') === DIFF.replace(' origin/main...', ' --stat origin/main...') ? { exitCode: 128, stderr: 'fatal: bad object' } : undefined))
+  await start($)
+  const run = lastRun(w)
+  expect(run.steps.review).toMatchObject({ status: 'failed', reason: expect.stringContaining('cannot read the change to review') })
+  expect(run.note).toContain('git diff --stat failed: fatal: bad object')
+  expect(run.outcome).toBe('failed')
+  expect(w.spawns).toHaveLength(0)
+})
