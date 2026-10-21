@@ -3323,3 +3323,21 @@ test('the recheck fails closed when the worktree HEAD cannot be read', async ($,
   expect(w.spawns).toHaveLength(3)
   expect(w.calls.some(c => c.startsWith('git push'))).toBe(false)
 })
+
+test('the recheck reviewer gets the guide before the commits, and the fixers and the PR body writer around it do not', async ($, on) => {
+  const w = world($, on, { config: GUIDE, gh: true })
+  w.rules.push(showGuide(GUIDE_TEXT))
+  await toRecheck($, w)
+  const prompt = w.spawns[3]!.prompt
+  expect(outside(prompt)).toContain(`docs/REVIEW.md on origin/main. Apply it as the standards of the author's team; the author's intent and the recorded decisions still outrank it:\n${GUIDE_TEXT}`)
+  expect(prompt.indexOf(GUIDE_TEXT)).toBeLessThan(prompt.indexOf('source="commits"'))
+  await complete($, 'agent-4', answer([C1]))
+  await pressOnce($, 'fix')
+  w.dirty = true
+  w.worktreeHead = FIXED_AGAIN
+  await complete($, 'agent-5', 'Fixed.')
+  await complete($, 'agent-6', answer([]))
+  expect(lastRun(w).steps.pr).toMatchObject({ status: 'passed' })
+  expect(w.spawns.map(s => s.prompt.includes(GUIDE_TEXT))).toEqual([true, false, false, true, false, true])
+  expect(w.completions[w.completions.length - 1]).not.toContain(GUIDE_TEXT)
+})
