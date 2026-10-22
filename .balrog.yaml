@@ -1,0 +1,2 @@
+commands:
+  test: claude plugin test .

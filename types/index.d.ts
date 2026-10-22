@@ -1,0 +1,89 @@
+export type StepName = 'rebase' | 'review' | 'test' | 'document' | 'lint' | 'recheck' | 'push' | 'pr' | 'ci'
+
+export type Severity = 'error' | 'warning' | 'info'
+
+export type FindingAction = 'auto-fix' | 'ask-user' | 'no-op'
+
+export type Finding = {
+  id: string
+  severity: Severity
+  action: FindingAction
+  file?: string
+  line?: number
+  description: string
+}
+
+// `starting`, and `fixing` without an agentId, are claims: one actor owns the step's start effect and nobody else may start it or settle it.
+export type StepState =
+  | { status: 'pending' }
+  | { status: 'starting'; startedAt: number }
+  // `reasked`: the fresh agent asked after an unreadable answer; it gets no third try.
+  | { status: 'running'; agentId?: string; startedAt: number; reasked?: true }
+  | { status: 'fixing'; agentId?: string; round: number; startedAt: number }
+  | { status: 'parked'; findings: Finding[] }
+  | { status: 'passed'; note?: string; findings: Finding[] }
+  | { status: 'skipped'; reason: string }
+  | { status: 'failed'; reason: string }
+
+export type Verdict = 'fix' | 'approve' | 'skip'
+
+export type Decision = { step: StepName; findingIds: string[]; verdict: Verdict; isAuto?: true }
+
+export type Outcome = 'passed' | 'failed' | 'aborted'
+
+// `commands.*` of .balrog.yaml as read from origin/<base>: the repository's
+// own shell commands, run by the mod inside the worktree.
+export type CommandName = 'prepare' | 'test' | 'lint' | 'format'
+
+export type Commands = Partial<Record<CommandName, string>>
+
+// `review.exclude` of .balrog.yaml, read the same way from origin/<base>:
+// git pathspecs left out of the diff and stat the agents see.
+export type Config = { commands: Commands; exclude: string[]; autofix: boolean; document: boolean; guide?: string }
+
+export type Guide = { path: string; text: string }
+
+export type FollowUp = { text: string; command?: string }
+
+export type Run = {
+  id: string
+  repo: string
+  branch: string
+  base: string
+  worktree: string
+  // What `<worktree>/.git` held when the mod created it, and where the repository's common git dir really lives.
+  gitFile: string
+  commonDir: string
+  intent: string
+  localHead: string
+  head: string
+  remoteHead: string
+  commands: Commands
+  exclude: string[]
+  autofix: boolean
+  document: boolean
+  guide?: Guide
+  // The worktree HEAD the reviewer was last handed, passed, approved or skipped.
+  reviewedHead?: string
+  prepared?: true
+  recordDir?: string
+  written?: string[]
+  commits?: string
+  agents: string[]
+  retired?: string[]
+  steps: Record<StepName, StepState>
+  decisions: Decision[]
+  prUrl?: string
+  prNumber?: number
+  // Abort pressed while a step's start effect (push, PR, spawn) was in flight. The owner of that effect honours it once the effect settles.
+  abortRequested?: true
+  outcome?: Outcome
+  note?: string
+  followUps?: FollowUp[]
+}
+
+declare module 'claude-code' {
+  interface PluginState {
+    'balrog': { run: Run | null; selected: string[] }
+  }
+}
