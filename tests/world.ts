@@ -45,6 +45,8 @@ export type World = {
   lists: number
   notifies: number
   invalidates: number
+  blits: { requestId: string; key: string; cells: string }[]
+  blitRefused: string | undefined
   stops: string[]
   stopFails: boolean
   status: Record<string, 'running' | 'completed' | 'killed'>
@@ -75,7 +77,18 @@ export const plain = (line: string) => line.replace(/^git( -c \S+)+ /, 'git ')
 
 export const HOST_ALLOWS = new Set(['TaskStop'])
 
+// The terminal drawings of the pane a test holds, which the world's blit answer needs and the kit does not report.
+let terminalPanes = 0
+
+export async function mountPane($: Engine, surface: RenderSurface = 'terminal', props: Partial<typeof PANE_PROPS> = {}) {
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PLUGIN, props: { ...PANE_PROPS, ...props } })
+  if (surface !== 'terminal') return ui
+  terminalPanes++
+  return { ...ui, unmount: () => ((terminalPanes -= 1), ui.unmount()) }
+}
+
 export function world($: Engine, on: On, options: Options = {}): World {
+  terminalPanes = 0
   const w: World = {
     calls: [],
     raw: [],
@@ -91,6 +104,8 @@ export function world($: Engine, on: On, options: Options = {}): World {
     lists: 0,
     notifies: 0,
     invalidates: 0,
+    blits: [],
+    blitRefused: undefined,
     stops: [],
     stopFails: false,
     status: {},
@@ -113,7 +128,7 @@ export function world($: Engine, on: On, options: Options = {}): World {
     fsPaths: [],
     holdWrite: undefined,
     pane: async (surface, props) => {
-      const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PLUGIN, props: { ...PANE_PROPS, ...props } })
+      const ui = await mountPane($, surface, props)
       const texts = (await ui.findAll({ type: 'Text' })).map(found => found.text)
       const buttons = (await ui.findAll({ type: 'Button' })).map(found => `${found.key ?? ''}=${found.text}`)
       await ui.unmount()
@@ -179,9 +194,15 @@ export function world($: Engine, on: On, options: Options = {}): World {
     w.notifies++
     return { value: { isSent: true, channel: 'terminal_bell' } }
   })
-  on('ui.invalidate', () => {
+  on('ui.invalidate', (_$, e, next) => {
     w.invalidates++
-    return { value: undefined }
+    return next(e)
+  })
+  // The kit has no implementation behind a blit, so the world answers as the host does.
+  on('ui.blit', (_$, e) => {
+    if ('cells' in e) w.blits.push({ requestId: e.requestId, key: e.key, cells: e.cells })
+    const deny = w.blitRefused ?? (terminalPanes === 0 ? 'nothing of balrog is mounted there' : undefined)
+    return { value: deny === undefined ? {} : { deny } }
   })
   on('fs.exists', (_$, e) => {
     w.fsPaths.push(e.path)
@@ -342,13 +363,13 @@ export const parkReview = async ($: Engine, w: World): Promise<void> => {
 }
 
 export const pressTwice = async ($: Engine, key: string): Promise<void> => {
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  const ui = await mountPane($, 'terminal')
   await Promise.all([ui.press({ key }), ui.press({ key })])
   await ui.unmount()
 }
 
 export const pressOnce = async ($: Engine, key: string): Promise<void> => {
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  const ui = await mountPane($, 'terminal')
   await ui.press({ key })
   await ui.unmount()
 }

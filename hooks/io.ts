@@ -1,4 +1,4 @@
-import type { AgentInfo, AgentSpawnArgs, AgentSpawnResult, FsStat, ModelCompleteRequest, ModelCompleteResult, ModelForkResult, ProcessRunInit, ProcessRunResult, Timer, UiNotifyResult, UiOpenResult } from 'claude-code'
+import type { AgentInfo, AgentSpawnArgs, AgentSpawnResult, FsStat, ModelCompleteRequest, ModelCompleteResult, ModelForkResult, ProcessRunInit, ProcessRunResult, Timer, UiBlitArgs, UiBlitResult, UiNotifyResult, UiOpenResult } from 'claude-code'
 
 import type { Run } from '../types'
 
@@ -25,6 +25,7 @@ export type Io = {
   toast: (text: string) => void
   notify: (text: string) => Promise<UiNotifyResult>
   invalidate: () => void
+  blit: (args: UiBlitArgs) => Promise<UiBlitResult>
   readRun: () => Promise<Run | null>
   writeRun: (change: (run: Run | null) => Run | null) => Promise<Run | null>
   readSelected: () => Promise<string[]>

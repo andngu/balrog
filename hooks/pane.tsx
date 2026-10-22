@@ -1,8 +1,10 @@
 import { atom, read } from 'claude-code'
-import type { Color, On } from 'claude-code'
+import type { Color, On, Timer } from 'claude-code'
 
 import type { Finding, FollowUp, Run, StepName, StepState, Verdict } from '../types'
 import { press, toggle } from './engine'
+import type { Fire } from './fire'
+import { BANKED_ROWS, cells, FIRE_MS, FIRE_ROWS, fireColumns } from './fire'
 import { io } from './io'
 import { AGENT_TIMEOUT_MS, commitLines, currentStep, fixRounds, fromStore, isAutoRound, isBlocking, MAX_FIX_ROUNDS, PANE, STEP_ORDER } from './run'
 
@@ -137,6 +139,44 @@ const pressAndToast = (verdict: Verdict | 'abort') => () =>
     if (pressed.kind !== 'done') io().toast(pressed.kind === 'refused' ? pressed.reason : pressed.text)
   })
 
+const FIRE_KEY = 'fire'
+
+// The frame outlives a drawing: the engine redraws the pane every 30 seconds,
+// and a redraw that went back to frame 0 would replay the entrance.
+let burning: { runId: string; frame: number; columns: number; rows: number } | undefined
+let timer: Timer | undefined
+
+function douse(t: Timer): void {
+  t.cancel()
+  if (timer === t) timer = undefined
+}
+
+async function tick(t: Timer): Promise<void> {
+  const run = await io().readRun()
+  const fire = burning
+  if (!run || !fire || run.id !== fire.runId) return douse(t)
+  if (!run.outcome) fire.frame++
+  const { columns, rows } = fire
+  const blitted = await io()
+    .blit({ requestId: PANE, key: FIRE_KEY, columns, rows, cells: cells({ columns, rows, frame: run.outcome ? 'embers' : fire.frame }) })
+    .catch((err: unknown) => ({ deny: String(err) }))
+  // A refused blit means the Raster is gone (pane closed, narrowed, resized); the next drawing lights the fire again.
+  if (blitted.deny !== undefined || run.outcome) douse(t)
+}
+
+function kindle(run: Run, bodyColumns: number, isParked: boolean): Fire | undefined {
+  const columns = fireColumns(bodyColumns)
+  if (columns === undefined) return undefined
+  // A parked step's findings need the rows more than the figure does, and the dock ignores the rows the pane asks for.
+  const rows = isParked || run.outcome ? BANKED_ROWS : FIRE_ROWS
+  burning = { ...(burning?.runId === run.id ? burning : { runId: run.id, frame: 0 }), columns, rows }
+  if (!run.outcome && !timer) {
+    const t: Timer = io().every(FIRE_MS, () => void tick(t))
+    timer = t
+  }
+  return { columns, rows, frame: run.outcome ? 'embers' : burning.frame }
+}
+
 const runAtom = atom({ plugin: 'balrog', key: 'run' } as const, null)
 const selectedAtom = atom({ plugin: 'balrog', key: 'selected' } as const, [])
 
@@ -155,8 +195,12 @@ export function registerPane(on: On): void {
     const b = board(run, await read($, selectedAtom), await $.clock.now())
     const { call, end } = b
     const showHint = e.surface === 'terminal' && !e.props.isFocused
+    const elements = $.ui.resolve(e)
+    const Raster = 'Raster' in elements ? elements.Raster : undefined
+    const fire = Raster && kindle(run, e.props.bodyColumns, call !== undefined)
     return (
       <Box flexDirection="column" gap={1}>
+        {fire && Raster && <Raster key={FIRE_KEY} columns={fire.columns} rows={fire.rows} cells={cells(fire)} />}
         <Box flexDirection="column">
           <Text weight="semibold">{b.title}</Text>
           <Text dimColor wrap="truncate-end">

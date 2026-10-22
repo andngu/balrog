@@ -67,6 +67,7 @@ export const register: Register = on => {
       toast: text => $.ui.toast(text),
       notify: text => $.ui.notify(text),
       invalidate: () => $.ui.invalidate('ui.render'),
+      blit: args => $.ui.blit(args),
       readRun: () => storedRun($),
       writeRun: async change => {
         const run = await update($, runAtom, run => change(run && fromStore(run)))

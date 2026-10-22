@@ -39,6 +39,8 @@ The install enables the mod. Check with `claude plugin list`. The entry reads `S
 
 The pane is a board of the nine steps, one row each. A row holds a glyph and the step's latest fact: the command it runs, how long it has run against its 30-minute limit, the findings it parked on, the reason it was skipped or failed, or the PR as a link. A fix round reads `fix round N`. When the pipeline chose the round, after a failing CI check or a finding under `autofix`, it reads `auto-fixing (fix round N)`, and the status line says `auto-fixing` the same way. A step past 25 minutes turns to the warning colour and says when it times out. The board redraws on every state change, and every 30 seconds while a step runs.
 
+In the terminal, a fire burns above the board while a run goes on. A balrog, horned and winged, with glowing eyes and a whip trailing to the ground, rises out of the flames over the run's first second and then stands in them. The flames move ten times a second. The fire is six rows tall and as wide as the pane. While a step is parked, it banks down to two rows of flame, so the findings keep the room. When the run ends, it dies down to two rows of dim embers that no longer move, and costs nothing more. The fire stops while the pane is closed or hidden, and goes on from the frame it had reached the next time the pane is drawn. The 30-second redraw does not restart it either, so the figure rises once per run in a session. A pane narrower than 30 columns draws no fire. The desktop app, the IDE extensions, and mobile draw the board alone.
+
 When a step parks, the findings are listed under the board, one row each. A row shows the severity, the action (`fixable`, `your call`, or `no action`), the file and line when the agent named one, and the first line of the description. Only the blocking findings start selected, and `[x]` marks a selected one. Press a digit, `1` to `9`, to toggle the finding it marks. A finding past the ninth has no digit, so click its row. Press `f` to send the selected findings to the fixer, `a` to approve every finding as is, `s` to skip the step, or `x` to abort. The headline above the findings says how many of the three fix rounds are left. The Fix button says how many findings it would send, or that no round is left. In the terminal, keys reach the pane only while it has the keyboard, after `ctrl+x tab` or a click, and the pane says so until then.
 
 When the run ends, the board keeps every step's last fact. A step still running when the run ends reads `stopped`. Under the board come the outcome and what is left for you to do, each command on its own line: pull the pushed commits into your branch, remove a kept worktree, or recover or drop the commits the run pinned. When the run removes its worktree, it also removes the run directory that held it, with `rmdir`, so a directory with anything left in it stays.
@@ -203,11 +205,11 @@ Run the tests from the repository root:
 claude plugin test .
 ```
 
-The suite passes on Claude Code 2.1.306 and 2.1.307. From 2.1.307 the testing kit holds a mod's own `$.tool.call` to the `tool.check` verdict, as the host does. The mocked world therefore answers `allow` for `TaskStop`, the host's own answer.
+The suite passes on Claude Code 2.1.306 and 2.1.307. From 2.1.307 the testing kit holds a mod's own `$.tool.call` to the `tool.check` verdict, as the host does. The mocked world therefore answers `allow` for `TaskStop`, the host's own answer. The kit has no implementation behind `$.ui.blit`, so the world answers it as the host does. A blit is taken while a test holds a terminal drawing of the pane, mounted through the world's `mountPane`, and refused otherwise.
 
 ### Layout
 
-- `hooks/`: the mod. `register.tsx` binds the commands and guards. `io.ts` holds the bindings the run reaches the host through. `engine.ts`, `steps.ts`, `git.ts`, `guard.ts`, `prompts.ts`, `pane.tsx`, and `run.ts` hold the run.
+- `hooks/`: the mod. `register.tsx` binds the commands and guards. `io.ts` holds the bindings the run reaches the host through. `engine.ts`, `steps.ts`, `git.ts`, `guard.ts`, `prompts.ts`, `pane.tsx`, and `run.ts` hold the run. `fire.ts` draws the fire above the pane's board.
 - `types/`: `index.d.ts`, the types of a run, a step, a finding, and the configured commands.
 - `tests/`: the tests, run against a mocked world. `world.ts` holds that world and the helpers more than one file uses. Each `*.test.ts` file holds one area:
   - `run.test.ts`: starting a run, the rebase, the worktree, and the run directory.
@@ -215,7 +217,7 @@ The suite passes on Claude Code 2.1.306 and 2.1.307. From 2.1.307 the testing ki
   - `commands.test.ts`: the test, lint, prepare, and format commands, the document step and its `document` setting, and the mod's commits.
   - `recheck.test.ts`: the recheck.
   - `push.test.ts`: the push, pr, and ci steps.
-  - `pane.test.ts`: the pane and the chat commands.
+  - `pane.test.ts`: the pane, its fire, and the chat commands.
   - `guards.test.ts`: the guards, and the ownership, timeouts, and stops of run agents.
   - `config.test.ts`: the `.balrog.yaml` reader, `review.exclude`, and `review.guide`.
   - `record.test.ts`: the run record, `history.jsonl`, and earlier approvals.

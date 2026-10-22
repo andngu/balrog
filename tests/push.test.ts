@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { FIXED, HEAD, PANE_PROPS, PLUGIN, PR_RULES, PUSH, REBASED, REMOTE, answer, command, complete, lastRun, passTwo, pressOnce, start, world } from './world'
+import { FIXED, HEAD, PR_RULES, PUSH, REBASED, REMOTE, answer, command, complete, lastRun, mountPane, passTwo, pressOnce, start, world } from './world'
 
 // The real timer of the test runtime, for work the mocked clock must not see.
 declare const setTimeout: (fn: () => void, ms: number) => unknown
@@ -289,7 +289,7 @@ test('R4-11: the mod commits are listed in the pane and appended to the PR body'
   const drawn = await w.pane('terminal')
   expect(drawn).toContain('cccc333 fix(balrog/test): make the test check pass')
   expect(drawn).not.toContain('file changed')
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  const ui = await mountPane($, 'terminal')
   expect((await ui.find({ type: 'Link' }))?.props.href).toBe('https://github.com/o/r/pull/7')
   await ui.unmount()
   const body = Object.entries(w.stdins).find(([line]) => line.startsWith('gh pr create'))?.[1] ?? ''
@@ -351,7 +351,7 @@ test('a pr create that prints no URL fails the step, and nothing gh printed beco
   const run = lastRun(w)
   expect(run.steps.pr).toMatchObject({ status: 'failed', reason: expect.stringContaining('printed no pull request URL') })
   expect(run.prUrl).toBeUndefined()
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  const ui = await mountPane($, 'terminal')
   expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
   await ui.unmount()
 })

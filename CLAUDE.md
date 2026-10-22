@@ -43,7 +43,8 @@ The dogfood pipeline pushes its own commits onto the branch under test. Run `git
 - `git.ts` makes every git and gh call. Nothing else in the mod runs git.
 - `guard.ts` places paths (it resolves links and `..` against the worktree's real path) and exposes `judge` (deny), `isAllowed` (allow), and `writtenPath` (which untracked file an agent wrote, so the commit takes only those).
 - `prompts.ts` holds the system prompts, the task prompts, and `untrusted()`, which wraps branch-, agent-, or CI-authored text in a tag with a fresh random name.
-- `pane.tsx` draws the step board and handles its keys.
+- `pane.tsx` draws the step board and handles its keys. On the terminal it also draws the fire, and one 100 ms timer blits the next frame to it.
+- `fire.ts` is the fire's picture: a pure function from a frame and a grid size to a Raster's packed cells.
 
 **Invariants to keep.** The code is built around these. Keep them when changing anything they touch.
 
@@ -56,7 +57,7 @@ The dogfood pipeline pushes its own commits onto the branch under test. Run `git
 
 ## Tests
 
-`tests/world.ts` is the mocked world. A rule list answers process calls by command line, `spawns` records agent spawns, `runs` records every stored run, and helpers such as `start`, `parkReview`, `pressOnce`, and `toolCall` drive the engine. Each `*.test.ts` covers one area (run, review, commands, recheck, push, pane, guards, config, record). Add a test to the file whose area it belongs to, and put a helper in `world.ts` only when more than one file needs it. `HOST_ALLOWS` lists the tools the host allows without an ask (`TaskStop`). The world must answer `allow` for them on 2.1.307.
+`tests/world.ts` is the mocked world. A rule list answers process calls by command line, `spawns` records agent spawns, `runs` records every stored run, and helpers such as `start`, `parkReview`, `pressOnce`, and `toolCall` drive the engine. Mount the pane through `mountPane`, never `$.ui.mount` directly, because the world refuses a blit unless a terminal drawing of the pane is held. Each `*.test.ts` covers one area (run, review, commands, recheck, push, pane, guards, config, record). Add a test to the file whose area it belongs to, and put a helper in `world.ts` only when more than one file needs it. `HOST_ALLOWS` lists the tools the host allows without an ask (`TaskStop`). The world must answer `allow` for them on 2.1.307.
 
 ## Conventions
 

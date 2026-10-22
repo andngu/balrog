@@ -1,8 +1,9 @@
 import type { Engine } from 'claude-code/testing'
 import { expect, test } from 'claude-code/testing'
 
+import { cells } from '../hooks/fire'
 import type { World } from './world'
-import { PANE_PROPS, PLUGIN, PUSH, REBASE, answer, command, complete, lastRun, outside, parkReview, pressOnce, reply, say, start, world } from './world'
+import { PANE_PROPS, PLUGIN, PUSH, REBASE, answer, command, complete, lastRun, mountPane, outside, parkReview, pressOnce, reply, say, start, world } from './world'
 
 // The real timer of the test runtime, for work the mocked clock must not see.
 declare const setTimeout: (fn: () => void, ms: number) => unknown
@@ -21,7 +22,7 @@ test('the pane is redrawn on every tick while a step runs, and not once the run 
 })
 
 const rowColour = async ($: Engine, text: string): Promise<unknown> => {
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  const ui = await mountPane($, 'terminal')
   const row = (await ui.findAll({ type: 'Text' })).find(found => found.text?.includes(text))
   await ui.unmount()
   return row?.props.color
@@ -101,7 +102,7 @@ test('Fix selected counts the findings it sends before the press, and the findin
     { id: 'r1', severity: 'error', action: 'auto-fix', description: 'off by one' },
     { id: 'r2', severity: 'warning', action: 'ask-user', description: 'naming' },
   ]))
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  const ui = await mountPane($, 'terminal')
   expect((await ui.find({ key: 'fix' }))?.text).toBe('Fix selected (2)')
   expect((await ui.find({ key: 'toggle:r1' }))?.props.hotkey).toBe('1')
   expect((await ui.find({ key: 'toggle:r2' }))?.props.hotkey).toBe('2')
@@ -386,4 +387,109 @@ test('/balrog-status lists a parked step\'s findings in full, as untrusted data'
   expect(body).toContain('[ ] r2 info no-op\n    naming')
   expect(body).not.toContain('Record:')
   expect(text.split('\n').pop()).toBe(`Record: ${lastRun(w).recordDir}/latest.json`)
+})
+
+type Cell = { glyph: string; fg: number; bg: number }
+
+const decode = (cells: string): Cell[] => {
+  const words = new Uint32Array(Uint8Array.fromBase64(cells).buffer)
+  return Array.from({ length: words.length / 3 }, (_, i) => ({ glyph: String.fromCharCode(words[i * 3]!), fg: words[i * 3 + 1]!, bg: words[i * 3 + 2]! }))
+}
+
+const DEFAULT_COLOR = 0x01000000
+
+const fireOf = async ($: Engine, surface: 'terminal' | 'desktop' = 'terminal', bodyColumns = PANE_PROPS.bodyColumns) => {
+  const ui = await mountPane($, surface, { bodyColumns })
+  const rasters = await ui.findAll({ type: 'Raster' })
+  await ui.unmount()
+  return rasters.map(r => r.props as { key: string; columns: number; rows: number; cells: string })
+}
+
+test('on the terminal a run draws the fire above the board, six rows tall and as wide as the pane; elsewhere and when narrow it draws none', async ($, on) => {
+  const w = world($, on)
+  expect(await fireOf($)).toEqual([])
+  await start($)
+  const [fire] = await fireOf($)
+  expect(fire).toMatchObject({ key: 'fire', columns: 100, rows: 6 })
+  expect(decode(fire!.cells)).toHaveLength(100 * 6)
+  expect((await fireOf($, 'terminal', 30))[0]).toMatchObject({ columns: 30, rows: 6 })
+  expect(await fireOf($, 'terminal', 29)).toEqual([])
+  expect(await fireOf($, 'desktop')).toEqual([])
+  expect((await w.pane('desktop')).split('\n')).toContain('feat → main')
+})
+
+test('the fire moves while the run runs, the same frame repeats, and a redraw shows the frame it had reached', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  const ui = await mountPane($)
+  await w.clock.advance(100)
+  await w.clock.advance(100)
+  await w.clock.advance(100)
+  expect(w.blits).toHaveLength(3)
+  for (const blit of w.blits) expect(blit).toMatchObject({ requestId: PLUGIN, key: 'fire' })
+  expect(new Set(w.blits.map(b => b.cells)).size).toBe(3)
+  expect(cells({ frame: 2, columns: 100, rows: 6 }) === cells({ frame: 2, columns: 100, rows: 6 })).toBe(true)
+  await w.clock.advance(30_000)
+  const drawn = (await ui.find({ type: 'Raster' }))?.props.cells
+  await ui.unmount()
+  // The engine's 30 second redraw falls a few ticks before the clock stops.
+  expect(w.blits.findIndex(b => b.cells === drawn)).toBeGreaterThan(w.blits.length - 10)
+})
+
+test('the figure rises in the first second and then stands in the flames', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  const [first] = await fireOf($)
+  const ui = await mountPane($, 'terminal')
+  await w.clock.advance(1_500)
+  await ui.unmount()
+  const eyes = (cells: string) => decode(cells).filter(c => c.fg === 0xffd27a || c.bg === 0xffd27a).length
+  expect(eyes(first!.cells)).toBe(0)
+  const standing = w.blits.slice(-5).map(b => eyes(b.cells))
+  expect(standing).toEqual([2, 2, 2, 2, 2])
+})
+
+test('once the run ends the fire banks to still, dim embers and the blits stop', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  const ui = await mountPane($, 'terminal')
+  await w.clock.advance(500)
+  await ui.press({ key: 'abort' })
+  expect(lastRun(w).outcome).toBe('aborted')
+  await w.clock.advance(200)
+  const settled = w.blits.length
+  await w.clock.advance(10_000)
+  expect(w.blits).toHaveLength(settled)
+  const ended = (await ui.find({ type: 'Raster' }))?.props as { rows: number; cells: string }
+  await ui.unmount()
+  expect(ended.rows).toBe(2)
+  expect((await fireOf($))[0]?.cells === ended.cells).toBe(true)
+  const colors = decode(ended.cells).flatMap(c => [c.fg, c.bg]).filter(c => c !== DEFAULT_COLOR)
+  expect(colors.length).toBeGreaterThan(0)
+  for (const c of colors) expect(Math.max(c >> 16, (c >> 8) & 0xff, c & 0xff)).toBeLessThan(0x80)
+})
+
+test('a refused blit puts the fire out until the pane is drawn again, and closing the pane is one', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  const ui = await mountPane($)
+  w.blitRefused = 'nothing of balrog is mounted there'
+  await w.clock.advance(100)
+  expect(w.blits).toHaveLength(1)
+  w.blitRefused = undefined
+  await w.clock.advance(5_000)
+  expect(w.blits).toHaveLength(1)
+  await ui.unmount()
+  const again = await mountPane($)
+  await w.clock.advance(300)
+  expect(w.blits).toHaveLength(4)
+  await again.unmount()
+  await w.clock.advance(5_000)
+  expect(w.blits).toHaveLength(5)
+})
+
+test('a parked step banks the fire to two rows so its findings keep the room', async ($, on) => {
+  const w = world($, on)
+  await parkReview($, w)
+  expect((await fireOf($))[0]).toMatchObject({ key: 'fire', rows: 2, columns: 100 })
 })

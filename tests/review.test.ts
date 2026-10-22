@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { AUTOFIX, BUG, CONFIG, DIFF, FIXED, PANE_PROPS, PLUGIN, PR_RULES, SURFACES, answer, command, complete, isDenied, lastRun, outside, parkReview, passTwo, pressOnce, pressTwice, start, toolCall, world } from './world'
+import { AUTOFIX, BUG, CONFIG, DIFF, FIXED, PLUGIN, PR_RULES, SURFACES, answer, command, complete, isDenied, lastRun, mountPane, outside, parkReview, passTwo, pressOnce, pressTwice, start, toolCall, world } from './world'
 
 test('malformed reviewer json, handed to a fresh reviewer once and still malformed, fails closed and keeps the worktree', async ($, on) => {
   const w = world($, on)
@@ -26,7 +26,7 @@ test('Approve records a decision, runs the test command itself, and starts the d
   const w = world($, on)
   await start($)
   await complete($, 'agent-1', answer([{ id: 'r1', severity: 'warning', action: 'ask-user', description: 'naming' }]))
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  const ui = await mountPane($, 'terminal')
   await ui.press({ key: 'approve' })
   await ui.unmount()
   const run = lastRun(w)
@@ -45,7 +45,7 @@ test('Fix selected sends only the toggled findings, commits the fix, then re-run
     { id: 'r1', severity: 'error', action: 'auto-fix', description: 'off by one' },
     { id: 'r2', severity: 'warning', action: 'ask-user', description: 'naming' },
   ]))
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  const ui = await mountPane($, 'desktop')
   await ui.press({ key: 'toggle:r2' })
   expect((await ui.find({ key: 'toggle:r2' }))?.text).toContain('[ ] warning')
   await ui.press({ key: 'fix' })
@@ -85,13 +85,13 @@ test('Skip and Abort are recorded; Abort removes the worktree', async ($, on) =>
   const w = world($, on)
   await start($)
   await complete($, 'agent-1', answer([{ id: 'r1', severity: 'error', action: 'auto-fix', description: 'bug' }]))
-  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  let ui = await mountPane($, 'terminal')
   await ui.press({ key: 'skip' })
   await ui.unmount()
   expect(lastRun(w).steps.review).toMatchObject({ status: 'skipped', reason: 'skipped by the human' })
   expect(lastRun(w).steps.document).toMatchObject({ status: 'running', agentId: 'agent-2' })
   await complete($, 'agent-2', answer([{ id: 'd1', severity: 'error', action: 'auto-fix', description: 'stale readme' }]))
-  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
+  ui = await mountPane($, 'terminal')
   await ui.press({ key: 'abort' })
   await ui.unmount()
   const run = lastRun(w)
