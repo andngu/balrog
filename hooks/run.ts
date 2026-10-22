@@ -116,6 +116,35 @@ export function isBlocking(f: Finding): boolean {
   return f.severity !== 'info' || f.action === 'ask-user'
 }
 
+export type PriorApproval = { runId: string; step: StepName; finding: Finding }
+
+export function priorApprovals(oldestFirst: string[], run: Run): PriorApproval[] {
+  const prior = new Map<string, PriorApproval>()
+  for (const line of [...oldestFirst].reverse()) {
+    for (const a of approvalsOf(line, run)) {
+      const f = a.finding
+      const key = JSON.stringify([a.step, f.id, f.file, f.line, f.description.split('\n')[0]])
+      if (!prior.has(key)) prior.set(key, a)
+    }
+  }
+  return [...prior.values()]
+}
+
+function approvalsOf(line: string, run: Run): PriorApproval[] {
+  try {
+    const held = JSON.parse(line) as Run
+    if (held?.repo !== run.repo || held.branch !== run.branch) return []
+    return held.decisions.flatMap(d => {
+      if (d.verdict !== 'approve' || d.isAuto) return []
+      const state: StepState | undefined = held.steps?.[d.step]
+      const findings = state !== undefined && 'findings' in state ? state.findings : []
+      return findings.filter(f => typeof f.description === 'string' && d.findingIds.includes(f.id) && isBlocking(f)).map(finding => ({ runId: held.id, step: d.step, finding }))
+    })
+  } catch {
+    return []
+  }
+}
+
 export function gate(findings: Finding[], note?: string): StepState {
   return findings.some(isBlocking) ? { status: 'parked', findings } : { status: 'passed', note, findings }
 }

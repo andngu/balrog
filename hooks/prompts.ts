@@ -1,5 +1,6 @@
 import type { CommandName, Decision, Finding, Run, StepName } from '../types'
 import { allowedCommands } from './guard'
+import type { PriorApproval } from './run'
 import { describeVerdict, isBlocking, STEP_ORDER } from './run'
 
 export const FINDINGS_PROTOCOL = `End your answer with exactly one fenced \`\`\`json block of this shape and nothing after it:
@@ -59,16 +60,31 @@ function excludedNote(run: Run): string {
   return run.exclude.length === 0 ? '' : `\nLeft out of this diff by review.exclude in .no-mistakes.yaml (the files still change; Read them when the review needs them): ${run.exclude.join(', ')}`
 }
 
+const MAX_PRIOR_APPROVALS = 40
+const MAX_PRIOR_DESCRIPTION = 200
+
+function clipped(text: string): string {
+  return text.length > MAX_PRIOR_DESCRIPTION ? `${text.slice(0, MAX_PRIOR_DESCRIPTION)}...` : text
+}
+
+function priorApprovalsBlock(prior: PriorApproval[]): string {
+  if (prior.length === 0) return ''
+  const shown = prior.slice(0, MAX_PRIOR_APPROVALS)
+  const lines = shown.map(({ runId, step, finding: f }) => `${runId} ${step}/${f.id} [${f.severity}]${f.file ? ` ${f.file}${f.line ? `:${f.line}` : ''}` : ''}: ${clipped(f.description.split('\n')[0]!)}`)
+  const cut = prior.length > shown.length ? ` Only the newest ${shown.length} of ${prior.length} are listed.` : ''
+  return `\n\nFindings the author approved as is in earlier runs of this branch. They are not decisions of this run: report one again only when this change makes it worse or you have evidence the author did not have.${cut}\n${untrusted('earlier approvals', lines.join('\n'))}`
+}
+
 function trustedGuideBlock(run: Run): string {
   return run.guide === undefined ? '' : `\n\nReview guide, ${run.guide.path} on origin/${run.base}. Apply it as the standards of the author's team; the author's intent and the recorded decisions still outrank it:\n${run.guide.text}`
 }
 
-export function reviewPrompt(run: Run, diff: string): string {
-  return `${header(run)}${trustedGuideBlock(run)}\n\nThe change under review, git diff origin/${run.base}...HEAD with its stat first:${excludedNote(run)}\n${untrusted('diff', diff)}\n\nReview the whole diff against the intent and report findings.`
+export function reviewPrompt(run: Run, diff: string, prior: PriorApproval[]): string {
+  return `${header(run)}${priorApprovalsBlock(prior)}${trustedGuideBlock(run)}\n\nThe change under review, git diff origin/${run.base}...HEAD with its stat first:${excludedNote(run)}\n${untrusted('diff', diff)}\n\nReview the whole diff against the intent and report findings.`
 }
 
-export function recheckPrompt(run: Run, reviewedHead: string, commits: string, diff: string): string {
-  return `${header(run)}${trustedGuideBlock(run)}\n\nStep "recheck". The review ran at ${reviewedHead.slice(0, 12)}. Since then the pipeline's own agents committed to the worktree (the fixer after a failing test or lint command, the document agent, fix rounds), and no reviewer has read those commits:\n${untrusted('commits', commits)}\n\nTheir change, git diff ${reviewedHead.slice(0, 12)}...HEAD with its stat first:${excludedNote(run)}\n${untrusted('diff', diff)}\n\nReview the whole diff against the intent, as adversarially as the review of the branch, and report findings.`
+export function recheckPrompt(run: Run, reviewedHead: string, commits: string, diff: string, prior: PriorApproval[]): string {
+  return `${header(run)}${priorApprovalsBlock(prior)}${trustedGuideBlock(run)}\n\nStep "recheck". The review ran at ${reviewedHead.slice(0, 12)}. Since then the pipeline's own agents committed to the worktree (the fixer after a failing test or lint command, the document agent, fix rounds), and no reviewer has read those commits:\n${untrusted('commits', commits)}\n\nTheir change, git diff ${reviewedHead.slice(0, 12)}...HEAD with its stat first:${excludedNote(run)}\n${untrusted('diff', diff)}\n\nReview the whole diff against the intent, as adversarially as the review of the branch, and report findings.`
 }
 
 export function documentPrompt(run: Run, stat: string): string {
