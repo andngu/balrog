@@ -30,13 +30,11 @@ export const AGENT_SPECS = [
   },
 ] as const
 
-// The steps whose start may spawn an agent; every step's fix round does.
-export const AGENT_STEPS: ReadonlySet<StepName> = new Set<StepName>(['review', 'test', 'document', 'lint', 'recheck'])
-
 export type StepOutcome = { step: StepState; patch?: Partial<Run>; decision?: Decision; skipRest?: string; reopen?: readonly StepName[] }
 
 export type StepDef = {
   name: StepName
+  agent?: typeof REVIEWER | typeof FIXER
   start: (run: Run) => Promise<StepOutcome>
   check: (run: Run, answer: string) => Promise<StepOutcome>
   // Steps that run again once a fix round of this step ends, before it does.
@@ -128,6 +126,7 @@ async function priorApprovalsOrNone(run: Run): Promise<PriorApproval[]> {
 
 const review: StepDef = {
   name: 'review',
+  agent: REVIEWER,
   async start(run) {
     const reviewedHead = await git.headOf(run)
     if (reviewedHead === undefined) return failed('cannot read the worktree HEAD')
@@ -140,6 +139,7 @@ const review: StepDef = {
 
 const document: StepDef = {
   name: 'document',
+  agent: FIXER,
   async start(run) {
     if (!run.document) return skipped('document: false in .no-mistakes.yaml')
     return running(run, FIXER, documentPrompt(run, await git.diffStat(run)), 'document')
@@ -149,6 +149,7 @@ const document: StepDef = {
 
 const recheck: StepDef = {
   name: 'recheck',
+  agent: REVIEWER,
   async start(run) {
     const from = run.reviewedHead ?? run.head
     const head = await git.headOf(run)
@@ -170,6 +171,7 @@ const recheck: StepDef = {
 // nothing passed.
 const commandStep = (name: 'test' | 'lint'): StepDef => ({
   name,
+  agent: FIXER,
   async start(run) {
     const command = run.commands[name]
     if (command === undefined) {

@@ -3,7 +3,7 @@ import * as git from './git'
 import { io } from './io'
 import { fixPrompt, reaskPrompt, UNTRUSTED_NOTE, untrusted } from './prompts'
 import { AGENT_TIMEOUT_MS, agentOf, autoFixable, CI_POLL_MS, claimedAt, currentStep, decide, fixRounds, isAgentDriven, isBlocking, isClaimed, isRetired, knownAgents, MAX_FIX_ROUNDS, newRun, parseFindings, PLUGIN, report, setStep, skipRest, statusText, timeoutFinding, writeOrDrop } from './run'
-import { AGENT_STEPS, commitMessage, FIXER, fixed, pollCi, spawn, STEP_DEFS } from './steps'
+import { commitMessage, FIXER, fixed, pollCi, spawn, STEP_DEFS } from './steps'
 import type { StepOutcome } from './steps'
 
 let pollTimer: { cancel: () => void } | undefined
@@ -29,7 +29,7 @@ export async function ownerOf(run: Run | null, agentId: string): Promise<Owned> 
   const name = currentStep(run)
   if (name === undefined) return 'not-ours'
   const state = run.steps[name]
-  if (!isClaimed(state) || !(state.status === 'fixing' || AGENT_STEPS.has(name))) return 'not-ours'
+  if (!isClaimed(state) || !(state.status === 'fixing' || STEP_DEFS[name].agent !== undefined)) return 'not-ours'
   try {
     return (await io().agents()).some(a => a.id === agentId && a.spawnedBy === PLUGIN) ? 'ours' : 'not-ours'
   } catch {
@@ -247,12 +247,13 @@ export async function onAgentAnswer(agentId: string, answer: string, reason: str
   let outcome: StepOutcome
   const committed = await git.commitAll(run, commitMessage(name, state))
   // Only the steps whose agent is asked for a findings block are read this way;
-  // each of them (review, document, test, lint) fails closed in its check too.
-  const parsed = state.status === 'running' && !state.reasked && AGENT_STEPS.has(name) ? parseFindings(answer, name) : undefined
+  // each of them fails closed in its check too.
+  const { agent } = STEP_DEFS[name]
+  const parsed = state.status === 'running' && !state.reasked && agent !== undefined ? parseFindings(answer, name) : undefined
   if (committed.kind === 'error') {
     outcome = { step: { status: 'failed', reason: committed.isSetup ? `${name}: ${committed.detail}` : `${name}: the agent's edits could not be committed: ${committed.detail}` } }
-  } else if (parsed && 'error' in parsed) {
-    return reask(name, agentId, parsed.error)
+  } else if (parsed && 'error' in parsed && agent !== undefined) {
+    return handOver(name, agent, agentId, parsed.error, answer)
   } else {
     try {
       outcome = state.status === 'fixing' ? fixed(run, name) : await STEP_DEFS[name].check(run, answer)
@@ -263,18 +264,22 @@ export async function onAgentAnswer(agentId: string, answer: string, reason: str
   if ((await settle(name, outcome, mine)) === 'continue') await advance()
 }
 
-// An answer the mod cannot read gets one more chance: the same agent, which
-// still holds its work in context, is asked for the findings block alone.
-// Its next answer is checked as usual, and an unreadable one fails closed.
-async function reask(name: StepName, agentId: string, error: string): Promise<void> {
-  const mine: From = s => agentOf(s) === agentId
-  const asked = await claim(name, s => mine(s) && s.status === 'running' && !s.reasked, r => {
-    const s = r.steps[name]
-    return s.status === 'running' ? setStep(r, name, { ...s, reasked: true }) : r
-  })
-  if (!asked) return
-  const sent = await io().send(agentId, reaskPrompt(error)).catch((e: unknown) => ({ isDelivered: false as const, reason: String(e) }))
-  if (!sent.isDelivered) await settle(name, { step: { status: 'failed', reason: `${name} answer is unreadable (${error}) and the agent could not be asked again (${sent.reason}); fail closed` } }, mine)
+// A fresh agent, not the one that answered: the host resumes a finished agent
+// only when its type is offered to the user's model, and register.tsx hides
+// the mod's (proved on Claude Code 2.1.306 and 2.1.307).
+async function handOver(name: StepName, type: string, agentId: string, error: string, answer: string): Promise<void> {
+  const startedAt = await io().now()
+  const claimed = await claim(name, s => agentOf(s) === agentId && s.status === 'running' && !s.reasked, r => setStep(r, name, { status: 'starting', startedAt }))
+  if (!claimed) return
+  const unreadable = `${name} answer is unreadable (${error})`
+  let step: StepState
+  try {
+    const started = await spawn(claimed, type, reaskPrompt(claimed, name, error, answer), `${name} again`)
+    step = 'error' in started ? { status: 'failed', reason: `${unreadable} and a fresh ${name} agent could not start: ${started.error}; fail closed` } : { status: 'running', agentId: started.agentId, startedAt, reasked: true }
+  } catch (e) {
+    step = { status: 'failed', reason: `${unreadable} and a fresh ${name} agent could not start: ${String(e)}; fail closed` }
+  }
+  await settle(name, { step }, isClaimed)
 }
 
 export async function toggle(id: string): Promise<void> {
