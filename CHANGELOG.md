@@ -2,6 +2,10 @@
 
 Each entry names the pull request that made the change.
 
+## Unreleased
+
+- The README reads one section per mode and documents that `prepare`'s edits to tracked files are restored, and `NM_MOD` for the realgit script. A `CLAUDE.md` describes the architecture. Comments that restated the code or the README are gone (#20).
+
 ## 0.2.0, 2026-10-21
 
 - The empty run directory is removed with the worktree (#9).

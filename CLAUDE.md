@@ -60,6 +60,6 @@ The dogfood pipeline pushes its own commits onto the branch under test. Run `git
 
 ## Conventions
 
-- Commit subjects read `type(no-mistakes): what changed`, and merged work gets a `CHANGELOG.md` line naming its PR. The version lives in `.claude-plugin/plugin.json`.
+- Commit subjects read `type(no-mistakes): what changed`, and a change a user can see gets a `CHANGELOG.md` line naming its PR. The version lives in `.claude-plugin/plugin.json`.
 - Comments in `hooks/` say why a constraint exists (which attack, which host rule), not what the line does. Match that.
 - `.no-mistakes.yaml` at the repo root configures the mod's own gate on this repository. Its test command is `claude plugin test .`.
