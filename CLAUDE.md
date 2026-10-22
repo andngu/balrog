@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Claude Code mod (plugin) that gates a feature branch. `/balrog [intent]` rebases, reviews, tests, documents, lints, rechecks, pushes, opens a PR, and watches CI. Subagents run every step inside a disposable detached worktree under `~/.cache/balrog/`. Blocking findings park the run in a pane where a human fixes, approves, skips, or aborts. The mod began as a port of kunchenguid/no-mistakes and diverges from it on purpose. The README's first paragraph says where.
+A Claude Code mod (plugin) that gates a feature branch. `/balrog [intent]` rebases, reviews, tests, documents, lints, rechecks, pushes, opens a PR, and watches CI. Subagents run every step inside a disposable detached worktree under `~/.cache/balrog/`. Blocking findings park the run in a pane where a human fixes, approves, skips, or aborts. The mod is inspired by kunchenguid/no-mistakes and differs from it on purpose. The README's first paragraph says where.
 
 There is no package.json, no build step, and no linter. The host loads `hooks/register.tsx` directly (see `hooks/hooks.json`). The plugin loader writes an untracked `tsconfig.json`. The README is the behavioural spec. It describes every edge case in prose, and the mod's own `document` step expects docs to track behaviour, so a change in behaviour is not done until the README says the new thing.
 

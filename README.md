@@ -4,7 +4,7 @@
 
 A Claude Code mod that gates a feature branch before it ships.
 
-Balrog began as a port of [kunchenguid/no-mistakes](https://github.com/kunchenguid/no-mistakes) (MIT) and keeps its shape: the step order, the disposable worktree, the `auto-fix` and `ask-user` findings, and the rule that a human decision outranks the intent. It parts from upstream on purpose. A recheck step reads what the pipeline itself committed, which upstream's design refuses, and hard guards on paths and commands stand where upstream steers by prompt. The code is its own, TypeScript against upstream's Go, and does not track upstream's behaviour.
+Balrog is inspired by [kunchenguid/no-mistakes](https://github.com/kunchenguid/no-mistakes) (MIT) and borrows its shape: the step order, the disposable worktree, the `auto-fix` and `ask-user` findings, and the rule that a human decision outranks the intent. It is a separate project, not a port. A recheck step reads what the pipeline itself committed, which no-mistakes' design refuses, and hard guards on paths and commands stand where no-mistakes steers by prompt. The code is its own, TypeScript against no-mistakes' Go, and does not track its behaviour.
 
 <p align="center"><img src="assets/demo.gif" alt="A recorded run: the reviewer parks on two findings, the fixer answers them, and the run passes" width="800"></p>
 
