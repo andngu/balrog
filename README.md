@@ -114,6 +114,8 @@ Run the tests from the repository root:
 claude plugin test .
 ```
 
+The suite passes on Claude Code 2.1.306 and 2.1.307. From 2.1.307 the testing kit holds a mod's own `$.tool.call` to the `tool.check` verdict, as the host does. The mocked world therefore answers `allow` for `TaskStop`, the host's own answer.
+
 - `hooks/`: the mod. `register.tsx` binds the commands and guards; `io.ts` holds the bindings the run reaches the host through; `engine.ts`, `steps.ts`, `git.ts`, `guard.ts`, `prompts.ts`, `pane.tsx` and `run.ts` hold the run.
 - `types/`: `index.d.ts`, the types of a run, a step, a finding and the configured commands.
 - `tests/`: `pipeline.test.ts`, the tests, run against a mocked world.

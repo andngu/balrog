@@ -77,6 +77,9 @@ type Options = { dangling?: string[]; branch?: string; gh?: boolean; config?: st
 // rule or an assertion reads the command itself; `raw` keeps them.
 const plain = (line: string) => line.replace(/^git( -c \S+)+ /, 'git ')
 
+// Tools the host runs with no ask of its own.
+const HOST_ALLOWS = new Set(['TaskStop'])
+
 function world($: Engine, on: On, options: Options = {}): World {
   const w: World = {
     calls: [],
@@ -169,7 +172,8 @@ function world($: Engine, on: On, options: Options = {}): World {
     return { value: { agent: `${PLUGIN}:${e.name}` } }
   })
   on('env.get', (_$, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
-  on('tool.check', () => w.coreCheck)
+  // From Claude Code 2.1.307 the kit holds the mod's own `$.tool.call` to this verdict.
+  on('tool.check', (_$, e) => (HOST_ALLOWS.has(e.tool) ? { decision: 'allow' as const } : w.coreCheck))
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', (_$, e) => {
     w.toasts.push(e.text)
@@ -1779,6 +1783,7 @@ test('B: the shell runs only a configured command spelled exactly; git, .git pat
   expect(isDenied(await toolCall($, 'agent-1', { tool: 'Read', file_path: '/repo/a.ts' }))).toBe(true)
   expect(await decision('other-agent', 'Edit', { file_path: `${wt}/a.ts`, old_string: 'a', new_string: 'b' })).toBe('ask')
   expect(await decision(undefined, 'Bash', { command: `cd '${wt}' && npm test` })).toBe('ask')
+  w.coreCheck = { decision: 'allow' }
   expect(isDenied(await toolCall($, 'other-agent', { tool: 'Bash', command: 'git push origin HEAD:feat' }))).toBe(false)
   expect(isDenied(await toolCall($, undefined, { tool: 'Bash', command: 'git push origin HEAD:feat' }))).toBe(false)
 })
@@ -1915,6 +1920,7 @@ test('E: in the spawn window an agent the list cannot vouch for is denied the ha
   expect(run.steps.review).toMatchObject({ status: 'starting' })
   w.listThrows = true
   expect((await toolCheck($, 'maybe-ours', 'Read', { file_path: `${run.worktree}/a.ts` })).decision).toBe('ask')
+  w.coreCheck = { decision: 'allow' }
   expect(isDenied(await toolCall($, 'maybe-ours', { tool: 'Bash', command: 'git push origin HEAD:main' }))).toBe(true)
   expect(isDenied(await toolCall($, 'maybe-ours', { tool: 'Read', file_path: `${run.worktree}/a.ts` }))).toBe(false)
   w.listThrows = false
@@ -1969,6 +1975,7 @@ test('R4-1: a run agent reads nothing outside the worktree, and Grep or Glob wit
   expect((await toolCall($, 'agent-1', { tool: 'Grep', pattern: 'x' })).deny).toContain('needs an absolute path under the worktree')
   expect(isDenied(await toolCall($, 'agent-1', { tool: 'Read', file_path: `${wt}/a.ts` }))).toBe(false)
   expect(isDenied(await toolCall($, 'agent-1', { tool: 'Grep', pattern: 'x', path: wt }))).toBe(false)
+  w.coreCheck = { decision: 'allow' }
   expect(isDenied(await toolCall($, 'users-own-agent', { tool: 'Read', file_path: '/repo/.env.local' }))).toBe(false)
 })
 
