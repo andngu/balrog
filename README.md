@@ -121,11 +121,23 @@ The suite passes on Claude Code 2.1.306 and 2.1.307. From 2.1.307 the testing ki
 
 - `hooks/`: the mod. `register.tsx` binds the commands and guards; `io.ts` holds the bindings the run reaches the host through; `engine.ts`, `steps.ts`, `git.ts`, `guard.ts`, `prompts.ts`, `pane.tsx` and `run.ts` hold the run.
 - `types/`: `index.d.ts`, the types of a run, a step, a finding and the configured commands.
-- `tests/`: `pipeline.test.ts`, the tests, run against a mocked world.
-- `scripts/realgit/`: checks that drive `git.ts` and `guard.ts` against real git repositories. Run `bun scripts/realgit/realgit.ts`.
+- `tests/`: the tests, run against a mocked world. `world.ts` holds that world and the helpers more than one file uses. Each `*.test.ts` file holds one area:
+  - `run.test.ts`: starting a run, the rebase, the worktree and the run directory.
+  - `review.test.ts`: the review, its findings, the decisions, fix rounds under `autofix`, and the hand-over after an unreadable answer.
+  - `commands.test.ts`: the test, lint, prepare and format commands, the document step and its `document` setting, and the mod's commits.
+  - `recheck.test.ts`: the recheck.
+  - `push.test.ts`: the push, pr and ci steps.
+  - `pane.test.ts`: the pane and the chat commands.
+  - `guards.test.ts`: the guards, and the ownership, timeouts and stops of run agents.
+  - `config.test.ts`: the `.no-mistakes.yaml` reader, `review.exclude` and `review.guide`.
+  - `record.test.ts`: the run record, `history.jsonl` and earlier approvals.
+- `scripts/realgit/`: checks that drive `git.ts` and `guard.ts` against real git repositories. Run `bun scripts/realgit/realgit.ts`, which runs the other three files too:
+  - `user-config-and-checkout.ts`: the user's git config, attributes and checkout stay out of a run.
+  - `conflicts-and-commits.ts`: a conflict is not called a signing failure, a commit takes only the paths a run agent wrote, and the commit list reads the attributes of the base.
+  - `stat-and-origin-url.ts`: the diff stat under a `-diff` attribute, and how origin's URL names a GitHub repository.
+- `scripts/dogfood-check.sh`: checks that drive `dogfood.sh start`, `record` and `wait` against a fake cache directory, with `tmux`, `claude` and `git clone` replaced by stubs. Run `scripts/dogfood-check.sh`.
 - `CHANGELOG.md`: one entry per release, each line naming its pull request. The version lives in `.claude-plugin/plugin.json`.
 - `LICENSE`: MIT, with the notice of the project this mod ports.
-- `scripts/dogfood-check.sh`: checks that drive `dogfood.sh start`, `record` and `wait` against a fake cache directory, with `tmux`, `claude` and `git clone` replaced by stubs. Run `scripts/dogfood-check.sh`.
 
 To gate a branch with its own mod, run `scripts/dogfood.sh start <branch> [intent]` on a pushed branch. It clones the branch from `origin` into `<cache>/no-mistakes-dogfood/<name>`, where `<cache>` is `$XDG_CACHE_HOME` or `~/.cache` and `<name>` is the branch with every character other than a letter, digit, `_` or `-` replaced by `-`, so `feat/x` and `feat-x` share a clone. It hosts Claude Code there in tmux with that clone loaded as the plugin, and, when you give an intent, runs `/no-mistakes` with it. Without an intent, `start` opens the session and stops. The hosted session runs the branch's mod and spends your own Claude quota. It is told to stay passive, because it once reacted to the mod's notifications by editing files in the clone. `start` answers the folder-trust dialog for that clone without asking you, on purpose, so the branch's plugin and hooks run. `start` never deletes an existing clone or session. It removes only the temporary directory of a clone of its own that failed. If the session or the clone already exists, it stops, and you run `stop` and remove the clone by hand. The pipeline pushes its commits to the branch, so pull afterwards.
 
