@@ -107,7 +107,9 @@ record() {
   rm -f "$cast"
   touch "$mark"
   local passive="This session hosts the balrog mod for a recorded demo. Do not edit files, run commands, spawn agents or act on run notifications on your own. When a notification or a message arrives, answer in one short line and wait."
-  local inner="claude --plugin-dir $(printf %q "$mod") --append-system-prompt $(printf %q "$passive")"
+  # The status line is the user's own (quota, weather, location) and has no place in a published recording.
+  local blank='{"statusLine":{"type":"command","command":"true"}}'
+  local inner="claude --plugin-dir $(printf %q "$mod") --settings $(printf %q "$blank") --append-system-prompt $(printf %q "$passive")"
   local rec="asciinema rec --overwrite --cols $cols --rows $rows -c $(printf %q "$inner") $(printf %q "$cast"); sleep 3600"
   tmux new-session -d -s "$session" -x "$cols" -y "$rows" -c "$repo" -e COLORTERM=truecolor -e TERM=xterm-256color "bash -lc $(printf %q "$rec")"
   for _ in $(seq 1 60); do
