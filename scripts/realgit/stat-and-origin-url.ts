@@ -1,5 +1,4 @@
-// Round-6 real-git checks, run from realgit.ts with its helpers.
-export async function round6(h: any): Promise<void> {
+export async function statAndOriginUrl(h: any): Promise<void> {
   const { git, sh, out, check, rebased, root } = h
   const origin = `${root}/r6-origin.git`
   const seed = `${root}/r6-seed`

@@ -1,7 +1,6 @@
-// Round-5 real-git checks, run from realgit.ts with its helpers.
 import { mkdirSync, writeFileSync } from 'node:fs'
 
-export async function round5(h: any): Promise<void> {
+export async function conflictsAndCommits(h: any): Promise<void> {
   const { git, sh, out, check, runFor, rebased, root } = h
   const origin = `${root}/r5-origin.git`
   const seed = `${root}/r5-seed`

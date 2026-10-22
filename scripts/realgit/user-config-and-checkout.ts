@@ -1,7 +1,6 @@
-// Round-4 real-git checks, run from realgit.ts with its helpers.
 import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 
-export async function round4(h: any): Promise<void> {
+export async function userConfigAndCheckout(h: any): Promise<void> {
   const { git, judge, isAllowed, stat, sh, out, check, runFor, rebased, root, home, setIdent } = h
   const origin = `${root}/r4-origin.git`
   const seed = `${root}/r4-seed`

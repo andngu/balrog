@@ -294,9 +294,9 @@ await sh(['sh', '-c', 'echo rel > g.txt && git add . && git commit -qm "relative
   await git.removeWorktree(run)
 }
 
-await import('./round4.ts').then(m => m.round4({ git, judge, isAllowed, stat, sh, out, check, runFor, rebased, root, home, setIdent: (on: boolean) => (ident = on) }))
-await import('./round5.ts').then(m => m.round5({ git, sh, out, check, runFor, rebased, root }))
-await import('./round6.ts').then(m => m.round6({ git, sh, out, check, rebased, root }))
+await import('./user-config-and-checkout.ts').then(m => m.userConfigAndCheckout({ git, judge, isAllowed, stat, sh, out, check, runFor, rebased, root, home, setIdent: (on: boolean) => (ident = on) }))
+await import('./conflicts-and-commits.ts').then(m => m.conflictsAndCommits({ git, sh, out, check, runFor, rebased, root }))
+await import('./stat-and-origin-url.ts').then(m => m.statAndOriginUrl({ git, sh, out, check, rebased, root }))
 
 console.log(failures === 0 ? 'ALL OK' : `${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)
