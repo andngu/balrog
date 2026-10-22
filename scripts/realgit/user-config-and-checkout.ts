@@ -1,7 +1,6 @@
-// Round-4 real-git checks, run from realgit.ts with its helpers.
 import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 
-export async function round4(h: any): Promise<void> {
+export async function userConfigAndCheckout(h: any): Promise<void> {
   const { git, judge, isAllowed, stat, sh, out, check, runFor, rebased, root, home, setIdent } = h
   const origin = `${root}/r4-origin.git`
   const seed = `${root}/r4-seed`
@@ -28,7 +27,7 @@ export async function round4(h: any): Promise<void> {
   check('R4-5: the rebase rewrote the feat commits (so update-refs had something to move)', (await out(['git', 'rev-parse', 'HEAD~1'], wt)) !== part1)
   check('R4-5: with rebase.updateRefs=true the user branch part1 did not move', (await out(['git', 'rev-parse', 'part1'], seed)) === part1)
 
-  const diff = await git.reviewDiff(run)
+  const diff = await git.reviewDiff(run).then(r => r.ok ? r.text : r.reason)
   check('R4-6: a -diff attribute in the branch does not hide app.js from the reviewer', diff.includes('+const secret = 1') && !diff.includes('Binary files'), diff.slice(0, 400))
   const plain = await out(['git', 'diff', 'origin/main...HEAD', '--', 'app.js'], wt)
   check('R4-6: (control) a plain git diff shows Binary files differ', plain.includes('Binary files'), plain)
@@ -62,7 +61,7 @@ export async function round4(h: any): Promise<void> {
   check('R4-7: the commit holds exactly the agent edits: app.js, fix2.txt, weird[1].txt', committed.kind === 'committed' && JSON.stringify(files) === JSON.stringify(['app.js', 'fix2.txt', 'weird[1].txt']), JSON.stringify({ committed, files }))
   check('R4-7: the global core.excludesFile still applies (x.secret not committed) and is the user value', !files.includes('x.secret') && (await out(['git', 'config', 'core.excludesFile'], wt)) === `${home}/.gitignore_global`)
 
-  const commits = await git.pipelineCommits(run)
+  const commits = await git.pipelineCommits(run).then(r => r.ok ? r.text : r.reason)
   check('R4-11: pipelineCommits lists the mod commit with its subject and stat', commits.includes('fix(no-mistakes/test): make the test check pass') && commits.includes('fix2.txt') && !commits.includes('feat one'), commits)
 
   const pushed = await git.push(run)

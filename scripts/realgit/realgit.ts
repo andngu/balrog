@@ -86,7 +86,7 @@ async function rebased(repo: string, label: string): Promise<Run> {
   const run = await runFor(repo, label)
   const r = await git.rebase(run)
   if (r.kind !== 'rebased') throw new Error(JSON.stringify(r))
-  return { ...run, head: r.head, remoteHead: r.remoteHead, commands: r.commands }
+  return { ...run, head: r.head, remoteHead: r.remoteHead, ...r.config }
 }
 const bash = (run: Run, command: string) => judge({ tool: 'Bash', input: { command } }, run.worktree, run.commands, stat)
 const allowed = (run: Run, tool: string, input: Record<string, unknown>) => isAllowed({ tool, input }, run.worktree, run.commands, stat)
@@ -259,7 +259,7 @@ await sh(['git', 'update-ref', 'refs/remotes/origin/old', 'HEAD'], seed)
   check('S: Write ../../refs/heads/main is refused', (await judge({ tool: 'Write', input: { file_path: `${wt}/../../refs/heads/main`, content: 'x' } }, wt, run.commands, stat)) !== undefined)
   check('S: Read of <wt>/.git is refused', (await judge({ tool: 'Read', input: { file_path: `${wt}/.git` } }, wt, run.commands, stat)) !== undefined)
   check('S: Grep with the worktree path is allowed, without a path it is not', (await allowed(run, 'Grep', { pattern: 'x', path: wt })) && !(await allowed(run, 'Grep', { pattern: 'x' })))
-  const diff = await git.reviewDiff(run)
+  const diff = await git.reviewDiff(run).then(r => r.ok ? r.text : r.reason)
   check('R: reviewDiff carries the stat and the patch', diff.includes('b.txt') && diff.includes('+local'), diff.slice(0, 200))
   await git.removeWorktree(run)
 }
@@ -294,9 +294,9 @@ await sh(['sh', '-c', 'echo rel > g.txt && git add . && git commit -qm "relative
   await git.removeWorktree(run)
 }
 
-await import('./round4.ts').then(m => m.round4({ git, judge, isAllowed, stat, sh, out, check, runFor, rebased, root, home, setIdent: (on: boolean) => (ident = on) }))
-await import('./round5.ts').then(m => m.round5({ git, sh, out, check, runFor, rebased, root }))
-await import('./round6.ts').then(m => m.round6({ git, sh, out, check, rebased, root }))
+await import('./user-config-and-checkout.ts').then(m => m.userConfigAndCheckout({ git, judge, isAllowed, stat, sh, out, check, runFor, rebased, root, home, setIdent: (on: boolean) => (ident = on) }))
+await import('./conflicts-and-commits.ts').then(m => m.conflictsAndCommits({ git, sh, out, check, runFor, rebased, root }))
+await import('./stat-and-origin-url.ts').then(m => m.statAndOriginUrl({ git, sh, out, check, rebased, root }))
 
 console.log(failures === 0 ? 'ALL OK' : `${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)
