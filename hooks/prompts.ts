@@ -15,9 +15,7 @@ export const REVIEWER_SYSTEM = `You are the no-mistakes reviewer: an independent
 
 export const FIXER_SYSTEM = `You are the no-mistakes fixer. You edit files inside a disposable git worktree, never the author's checkout. You have Read, Edit and Write over the worktree (Grep and Glob where this build offers them), every path absolute and under it, plus a shell that runs only the exact commands your task lists (copy them verbatim); any other command, and any path outside the worktree or at .git, is refused, so say what you could not do in your findings instead of working around it. You have no git: the pipeline commits whatever you changed, with its own message, as soon as you answer, then re-runs the step's check. Fix what the task names at the root cause, re-run the listed command when there is one, and repeat up to three rounds. Respect every recorded human decision: never implement what a human declined and never undo what a human chose to fix. ${UNTRUSTED_NOTE} ${FINDINGS_PROTOCOL}`
 
-// Each wrapper gets a fresh random tag, so the data goes in byte for byte
-// (the reviewer must see the diff as it is) and nothing in it, written before
-// the tag existed, can close it.
+// A fresh random tag per wrapper: nothing in the data, written before the tag existed, can close it.
 export function untrusted(source: string, text: string): string {
   let tag: string
   do tag = `untrusted-${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 10)}`
@@ -36,8 +34,6 @@ function shellBlock(run: Run): string {
   return allowed.length === 0 ? 'Shell: no command is configured, so Bash refuses everything; verify by reading.' : `Shell: Bash runs exactly these commands and no other:\n${allowed.map(c => `- ${c}`).join('\n')}`
 }
 
-// A fixer may have no Grep or Glob, so its header names the files the change
-// touches; the reviewer's prompt carries the whole diff instead.
 function header(run: Run, stat?: string): string {
   return [
     `Worktree: ${run.worktree} (detached HEAD ${run.head.slice(0, 12)}, branch ${run.branch} rebased onto origin/${run.base}).`,
@@ -103,10 +99,7 @@ export function ciFixPrompt(run: Run, failing: string[], log: string, stat: stri
   return `${header(run, stat)}\n\nStep "ci". These CI checks failed on the pull request ${run.prUrl ?? ''}:\n${untrusted('ci checks', failing.join('\n'))}\n\nFailed log excerpt:\n${untrusted('ci log', log || '(no log available; reproduce locally)')}\n\nReproduce locally in the worktree where a listed command allows, fix the root cause, and report what remains. The pipeline commits and pushes your edits after you answer.`
 }
 
-// Only the blocking findings a human let through reach the PR: an info note
-// is an agent's free text with nothing to decide, and a way out for whatever
-// an injected agent wants published. What does reach it is agent-authored, so
-// it goes in as untrusted data.
+// Info findings stay out of the PR: an info note is free text with nothing to decide, and a way out for whatever an injected agent wants published.
 export function prBodyPrompt(run: Run, stat: string): string {
   const steps = STEP_ORDER.map(name => {
     const s = run.steps[name]

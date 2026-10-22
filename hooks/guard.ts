@@ -2,11 +2,7 @@ import type { Commands } from '../types'
 
 export type Stat = (path: string) => Promise<{ realPath?: string }>
 
-// Where a path lands once every link and `..` is resolved, or undefined when
-// it cannot be placed. A path whose tail does not exist yet (Write creates
-// parents) is placed by its first existing ancestor plus the plain tail. An
-// entry that exists but resolves nowhere (a dangling link) cannot be placed:
-// a Write through it lands wherever the link points.
+// An entry that exists but resolves nowhere (a dangling link) cannot be placed: a Write through it lands wherever the link points.
 async function placed(path: string, stat: Stat): Promise<string | undefined> {
   if (!path.startsWith('/')) return undefined
   const parts = path.split('/').slice(1)
@@ -23,10 +19,6 @@ async function placed(path: string, stat: Stat): Promise<string | undefined> {
   return undefined
 }
 
-// `inside` carries the path relative to the worktree. `git`: at or under a
-// `.git` entry of the worktree, in any letter case (a case-insensitive file
-// system folds `.GIT` onto it), the one place inside it an agent must never
-// touch (a rewritten gitdir redirects the mod's own git).
 type Placement = { where: 'inside'; relative: string } | { where: 'git' } | { where: 'outside' }
 
 async function placement(path: string, worktree: string, stat: Stat): Promise<Placement> {
@@ -36,6 +28,7 @@ async function placement(path: string, worktree: string, stat: Stat): Promise<Pl
   if (real === root) return { where: 'inside', relative: '' }
   if (!real.startsWith(`${root}/`)) return { where: 'outside' }
   const relative = real.slice(root.length + 1)
+  // A case-insensitive file system folds `.GIT` onto `.git`, so the match ignores case.
   return relative.split('/').some(part => part.toLowerCase() === '.git') ? { where: 'git' } : { where: 'inside', relative }
 }
 
@@ -47,14 +40,11 @@ function pathOf(tool: string, input: Record<string, unknown>): string | undefine
   return typeof value === 'string' ? value : undefined
 }
 
-// A Glob pattern that is absolute or climbs is a path of its own, searched
-// from wherever it names rather than under `path`.
+// A Glob pattern that is absolute or climbs is searched from wherever it names, not under `path`.
 const escapes = (pattern: unknown) => typeof pattern !== 'string' || /^[/~]/.test(pattern) || pattern.split(/[/\\]/).includes('..')
 
 const quoted = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`
 
-// The whole shell an agent gets: each configured command, spelled exactly so,
-// from the worktree. `prepare` is the mod's alone.
 export function allowedCommands(worktree: string, commands: Commands): string[] {
   return (['test', 'lint', 'format'] as const).flatMap(name => (commands[name] === undefined ? [] : [`cd ${quoted(worktree)} && ${commands[name]}`]))
 }
@@ -66,8 +56,6 @@ export function asCall(e: { tool: string; input?: unknown; [k: string]: unknown 
   return { tool: e.tool, input }
 }
 
-// What a run agent's file call reaches: every read and every write stays
-// inside the worktree, never at its .git.
 async function fileVerdict({ tool, input }: Call, worktree: string, stat: Stat): Promise<{ deny: string } | { relative: string }> {
   const path = pathOf(tool, input)
   if (path === undefined) return { deny: `${tool} needs an absolute path under the worktree ${worktree}` }
@@ -78,16 +66,11 @@ async function fileVerdict({ tool, input }: Call, worktree: string, stat: Stat):
   return { relative: at.relative }
 }
 
-// The allow half, at tool.check: what a run agent may do without a permission
-// ask. Everything else keeps the engine's own verdict.
 export async function isAllowed(call: Call, worktree: string, commands: Commands, stat: Stat): Promise<boolean> {
   if (call.tool !== 'Bash' && !WRITE_TOOLS.has(call.tool) && !READ_TOOLS.has(call.tool)) return false
   return (await judge(call, worktree, commands, stat)) === undefined
 }
 
-// The deny half, at tool.call: what no rule of the user's may let a run agent
-// do. Any file call outside the worktree or at its `.git`, any shell command
-// that is not one of the configured ones.
 export async function judge(call: Call, worktree: string, commands: Commands, stat: Stat): Promise<string | undefined> {
   if (call.tool === 'Bash') {
     const command = typeof call.input.command === 'string' ? call.input.command.trim() : ''
@@ -100,9 +83,6 @@ export async function judge(call: Call, worktree: string, commands: Commands, st
   return 'deny' in verdict ? verdict.deny : undefined
 }
 
-// The worktree-relative path a run agent's allowed write creates or changes:
-// the mod commits untracked files only when an agent wrote them, so residue
-// a command leaves (node_modules, coverage) never lands in a commit.
 export async function writtenPath(call: Call, worktree: string, stat: Stat): Promise<string | undefined> {
   if (!WRITE_TOOLS.has(call.tool)) return undefined
   const verdict = await fileVerdict(call, worktree, stat)

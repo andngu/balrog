@@ -13,8 +13,7 @@ export type Finding = {
   description: string
 }
 
-// `starting`, and `fixing` without an agentId, are claims: one actor owns the
-// step's start effect and nobody else may start it or settle it.
+// `starting`, and `fixing` without an agentId, are claims: one actor owns the step's start effect and nobody else may start it or settle it.
 export type StepState =
   | { status: 'pending' }
   | { status: 'starting'; startedAt: number }
@@ -52,9 +51,7 @@ export type Run = {
   branch: string
   base: string
   worktree: string
-  // What `<worktree>/.git` held when the mod created it, and where the
-  // repository's common git dir really lives: the mod runs git in the worktree
-  // only while both still hold.
+  // What `<worktree>/.git` held when the mod created it, and where the repository's common git dir really lives.
   gitFile: string
   commonDir: string
   intent: string
@@ -69,24 +66,16 @@ export type Run = {
   // The worktree HEAD the reviewer was last handed, passed, approved or skipped.
   reviewedHead?: string
   prepared?: true
-  // `<cache>/no-mistakes/<name>-<hash>`, where latest.json and history.jsonl go.
   recordDir?: string
-  // Worktree-relative paths a run agent wrote: the only untracked files the
-  // mod commits, so what a command leaves behind stays out.
   written?: string[]
-  // The mod's own commits beyond the rebased head, subject and stat, as the
-  // push step found them.
   commits?: string
   agents: string[]
-  // Agents whose step has moved on: their answers are ignored and every tool
-  // call they make is refused, as is every run agent's once the run ends.
   retired?: string[]
   steps: Record<StepName, StepState>
   decisions: Decision[]
   prUrl?: string
   prNumber?: number
-  // Abort pressed while a step's start effect (push, PR, spawn) was in
-  // flight; the owner of that effect honours it once the effect settles.
+  // Abort pressed while a step's start effect (push, PR, spawn) was in flight. The owner of that effect honours it once the effect settles.
   abortRequested?: true
   outcome?: Outcome
   note?: string

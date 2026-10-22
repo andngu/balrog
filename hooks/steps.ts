@@ -8,9 +8,7 @@ import { approvedOrSkipped, CI_GRACE_MS, CI_QUIET_MS, CI_TIMEOUT_MS, commitLines
 export const REVIEWER = `${PLUGIN}:reviewer`
 export const FIXER = `${PLUGIN}:fixer`
 
-// Neither agent has git or a general shell: the mod owns every git call, and
-// the fixer's Bash runs only the configured commands (register.tsx). dontAsk
-// refuses at once what the mod's tool.check does not allow, instead of
+// dontAsk refuses at once what the mod's tool.check does not allow, instead of
 // holding the pipeline on a dialog nobody answers.
 export const AGENT_SPECS = [
   {
@@ -37,13 +35,11 @@ export type StepDef = {
   agent?: typeof REVIEWER | typeof FIXER
   start: (run: Run) => Promise<StepOutcome>
   check: (run: Run, answer: string) => Promise<StepOutcome>
-  // Steps that run again once a fix round of this step ends, before it does.
   reopens?: readonly StepName[]
 }
 
 export const fixed = (run: Run, name: StepName): StepOutcome => ({ step: { status: 'pending' }, reopen: (STEP_DEFS[name].reopens ?? []).filter(step => !approvedOrSkipped(run, step)) })
 
-// The message of the commit the mod makes from an agent's edits.
 export function commitMessage(name: StepName, state: StepState): string {
   if (state.status === 'fixing') return `fix(no-mistakes/${name}): fix round ${state.round}`
   if (name === 'document') return 'docs(no-mistakes): update documentation for the change'
@@ -54,8 +50,7 @@ export async function spawn(run: Run, type: string, prompt: string, label: strin
   const description = `no-mistakes ${label} (${run.id}/${run.decisions.length})`
   const r = await io().spawn({ prompt, subagentType: type, cwd: run.worktree, description })
   if (r.deny !== undefined) return { error: r.deny }
-  // Only core stamps agentId; when a hook above answered the spawn itself, the
-  // agent list is the one place the started agent's id can still be read.
+  // Only core stamps agentId. When a hook above answered the spawn itself, the agent list is the one place the started agent's id can still be read.
   const agentId = r.agentId ?? (await io().agents()).findLast(a => a.description === description)?.id
   if (agentId === undefined) return { error: 'the agent started without an id' }
   knownAgents.add(agentId)
@@ -165,10 +160,6 @@ const recheck: StepDef = {
   reopens: ['test', 'lint'],
 }
 
-// A step that is a configured command: the mod runs it, a failure goes to the
-// fixer, and the re-run after the fixer's commit is the verdict; a fix round
-// repeats this. With no command configured the step parks: nothing ran, so
-// nothing passed.
 const commandStep = (name: 'test' | 'lint'): StepDef => ({
   name,
   agent: FIXER,
@@ -257,16 +248,13 @@ const ci: StepDef = {
   check: notAgentDriven('ci'),
 }
 
+// Must move ci from running to a fixing placeholder atomically: a second poll that overlaps the slow log fetch and spawn must find the claim.
 export type ClaimFix = (findings: Finding[], round: number) => Promise<Run | undefined>
 
-// `isClaimed` says this poll moved ci to the fixing placeholder, so its
-// outcome is the only one that may replace that placeholder.
 export type Polled = { outcome: StepOutcome; isClaimed: boolean }
 
 const polled = (outcome: StepOutcome): Polled => ({ outcome, isClaimed: false })
 
-// `claimFix` must move ci from running to a fixing placeholder atomically, so
-// a second poll that overlaps the slow log fetch and spawn finds the claim.
 export async function pollCi(run: Run, claimFix: ClaimFix): Promise<Polled | undefined> {
   const state = run.steps.ci
   if (state.status !== 'running' || run.prNumber === undefined) return undefined
@@ -282,9 +270,6 @@ export async function pollCi(run: Run, claimFix: ClaimFix): Promise<Polled | und
   const failing = checks.filter(c => c.bucket === 'fail' || c.bucket === 'cancel').map(c => c.name)
   if (failing.length > 0) {
     const round = fixRounds(run, 'ci') + 1
-    // A check name is the branch's to choose (a workflow it edits), so its id is a slug.
-    // Each id is checked against every id already issued, so a suffixed id cannot
-    // collide with a real slug (checks 'x', 'x', 'x-2' get ci:x, ci:x-2, ci:x-2-2).
     const issued: string[] = []
     const findings: Finding[] = failing.map(name => {
       const base = `ci:${slug(name)}`
@@ -313,9 +298,6 @@ export async function pollCi(run: Run, claimFix: ClaimFix): Promise<Polled | und
     if ((await git.workflowCount(run)) === 0) {
       return polled({ step: { status: 'skipped', reason: `no CI: the repository defines no Actions workflow and no check reported within ${Math.round(CI_GRACE_MS / 60_000)} minutes` } })
     }
-    // Workflows that do not run on pull requests, or that path filters skip,
-    // will never report: nothing ran, so nothing passed, and a human decides
-    // now rather than after the 30-minute timeout.
     if (waited > CI_QUIET_MS) {
       const skipped = listed.length > 0 ? ` (${listed.length} skipped)` : ''
       const finding: Finding = { id: 'ci:no-checks', severity: 'warning', action: 'ask-user', description: `no CI check ran on ${run.remoteHead.slice(0, 12)} within ${Math.round(CI_QUIET_MS / 60_000)} minutes${skipped}: the workflows may not run on pull requests, or path filters skipped them. Approve to continue without CI` }

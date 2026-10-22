@@ -20,7 +20,6 @@ test('the pane is redrawn on every tick while a step runs, and not once the run 
   expect(w.invalidates).toBe(after)
 })
 
-// The colour of the row whose text holds `text`, as the pane draws it now.
 const rowColour = async ($: Engine, text: string): Promise<unknown> => {
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PLUGIN, props: PANE_PROPS })
   const row = (await ui.findAll({ type: 'Text' })).find(found => found.text?.includes(text))

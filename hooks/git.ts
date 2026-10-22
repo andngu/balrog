@@ -12,22 +12,16 @@ async function exec(argv: readonly string[], cwd: string, stdin?: string): Promi
   }
 }
 
-// Every git the mod runs has the two config keys that execute repository code
-// pinned off, so a branch's husky hooksPath or a crafted gitdir's fsmonitor
-// runs nothing, in the worktree and in the user's repository alike; and
-// submodule.recurse, so no checkout, rebase or push reaches into a submodule.
+// A branch controls the config that git runs hooks and fsmonitor from, so every git call pins them off.
 const HOOKS_OFF = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'submodule.recurse=false']
 
 export const git = (cwd: string, ...args: string[]) => exec(['git', ...HOOKS_OFF, ...args], cwd)
 
 export const gh = (cwd: string, args: string[], stdin?: string) => exec(['gh', ...args], cwd, stdin)
 
-// git's own words for a signer that did not sign (gpg, gpgsm, ssh-keygen);
-// a bare /sign/ would take a commit subject like "Redesign" for one.
+// git's own words for a signer that did not sign; a bare /sign/ would match the commit subject "Redesign".
 const SIGNING = /gpg failed to sign|failed to sign the data|cannot run (gpg|gpgsm|ssh-keygen)|signingkey|ssh signing|failed to write commit object/i
 
-// A commit git refuses for the user's own setup rather than for anything the
-// run did: no identity, or signing that is on and does not work.
 function setupProblem(err: string): string | undefined {
   if (/tell me who you are|unable to auto-detect email|empty ident name|identity unknown/i.test(err)) {
     return 'git identity not set, so git cannot commit: run git config --global user.name "<name>" and git config --global user.email "<email>", then run again'
@@ -94,10 +88,7 @@ function hashOf(text: string): string {
   return h.toString(16).padStart(8, '0')
 }
 
-// The run's directory holds the worktree alone, under a per-user cache root
-// the mod keeps at mode 0700: no other local user can pre-create or swap a
-// path there, and a relative escape from the worktree reaches nothing of the
-// user's repository.
+// The cache root stays at mode 0700 so no other local user can pre-create or swap a path under it.
 export async function runDirectory(facts: RepoFacts, runId: string): Promise<{ ok: true; path: string; recordDir: string } | { ok: false; reason: string }> {
   const cache = (await io().cacheHome()) || `${(await io().home()) ?? ''}/.cache`
   if (!cache.startsWith('/')) return { ok: false, reason: 'neither XDG_CACHE_HOME nor HOME names an absolute directory' }
@@ -133,10 +124,7 @@ export async function removeWorktree(run: Run): Promise<Ran> {
   return removed
 }
 
-// The worktree is the one place an agent writes, so before git reads it the
-// mod checks that `.git` still points where the mod left it: a rewritten
-// gitdir would make an in-worktree commit land on the user's branch, or load
-// a config of the agent's making.
+// A rewritten gitdir would land an in-worktree commit on the user's branch, or load a config of the agent's making, so git runs in the worktree only while `.git` holds what the mod wrote.
 export async function intact(run: Run): Promise<string | undefined> {
   let file: string | undefined
   try {
@@ -161,8 +149,6 @@ export type Pinned = { kind: 'reachable' } | { kind: 'pinned'; ref: string } | {
 
 export const recoveryRef = (run: Run) => `refs/no-mistakes/recover/${run.id}`
 
-// Commits the worktree made beyond the rebased head (the pipeline's own
-// fixes) survive its removal under a ref of their own.
 export async function pinHead(run: Run): Promise<Pinned> {
   const head = await headOf(run)
   if (head === undefined) return { kind: 'error', detail: 'cannot read the worktree HEAD' }
@@ -174,10 +160,7 @@ export async function pinHead(run: Run): Promise<Pinned> {
   return r.ok ? { kind: 'pinned', ref } : { kind: 'error', detail: r.err || 'git update-ref failed' }
 }
 
-// Fetch and push run in the main repository, not the worktree: the refs are
-// shared, and a relative remote URL (`../origin.git`) resolves against the
-// directory git runs in. Only the two refs the run needs are fetched, never
-// with --prune: the user's other remote-tracking refs are theirs.
+// A relative remote URL (`../origin.git`) resolves against the directory git runs in, so fetch and push run in the main repository.
 async function fetchRefs(run: Run): Promise<{ ok: true; remoteHead: string } | { ok: false; detail: string }> {
   const probe = await git(run.repo, 'ls-remote', '--exit-code', 'origin', `refs/heads/${run.branch}`)
   if (!probe.ok && probe.code !== 2) return { ok: false, detail: `git ls-remote origin failed: ${probe.err}` }
@@ -189,9 +172,7 @@ async function fetchRefs(run: Run): Promise<{ ok: true; remoteHead: string } | {
   return { ok: true, remoteHead }
 }
 
-// `pull`: origin/<branch> holds commits the local branch has no version of.
-// `rewritten`: every remote-only commit has a local patch twin, so the local
-// branch is a rewrite the user has not pushed yet.
+// `pull`: origin/<branch> holds commits the local branch has no version of. `rewritten`: every remote-only commit has a local patch twin, so the local branch is an unpushed rewrite.
 export type Behind = 'pull' | 'rewritten'
 
 export type Rebased =
@@ -209,8 +190,7 @@ export async function rebase(run: Run): Promise<Rebased> {
   const remote = await fetchRefs(run)
   if (!remote.ok) return { kind: 'error', detail: remote.detail }
   const remoteHead = remote.remoteHead
-  // Checked before the rebase rewrites the commits: afterwards nothing of
-  // origin/<branch> is an ancestor of HEAD even when the branch was up to date.
+  // A rebase rewrites the commits, so after it nothing of origin/<branch> is an ancestor of HEAD.
   if (remoteHead !== '' && !(await isAncestor(run, remoteHead, 'HEAD'))) return { kind: 'behind', remoteHead, how: await howBehind(run, remoteHead) }
   // Pinned against the user's rebase.updateRefs and rebase.autoStash: either
   // would move the user's other branches or their stash from the worktree.
@@ -328,8 +308,6 @@ export async function isAncestor(run: Run, older: string, newer: string): Promis
   return (await wt(run, 'merge-base', '--is-ancestor', older, newer)).ok
 }
 
-// The pipeline's own config is read from the trusted default branch, never
-// from the branch under review.
 export async function showOnBase(run: Run, path: string): Promise<string | undefined> {
   const r = await wt(run, 'show', `origin/${run.base}:${path}`)
   return r.ok ? r.out : undefined
@@ -492,9 +470,6 @@ function readCommands(lines: string[]): Commands | { error: string } {
 
 export type CommandRun = { exitCode: number; output: string }
 
-// A configured command is the repository's own, run as the user: this is the
-// trust upstream no-mistakes extends too, and the one place a run executes
-// code of the branch's ancestry.
 export async function runCommand(run: Run, command: string): Promise<CommandRun> {
   try {
     const r = await io().run(['sh', '-c', command], { cwd: run.worktree, timeoutMs: 600_000 })
@@ -504,9 +479,6 @@ export async function runCommand(run: Run, command: string): Promise<CommandRun>
   }
 }
 
-// `prepare` runs once per worktree. What it changed in tracked files (a
-// lockfile) is put back; what it leaves untracked never reaches a commit,
-// since the mod commits only untracked files an agent wrote.
 export async function prepare(run: Run): Promise<{ ok: true } | { ok: false; reason: string }> {
   const command = run.commands.prepare
   if (command === undefined || run.prepared) return { ok: true }
@@ -516,16 +488,9 @@ export async function prepare(run: Run): Promise<{ ok: true } | { ok: false; rea
   return restored.ok ? { ok: true } : { ok: false, reason: `cannot restore tracked files after prepare: ${restored.err}` }
 }
 
-// `isSetup`: git refused for the user's own setup (identity, signing), and
-// `detail` says what to fix.
 export type Committed = { kind: 'clean' } | { kind: 'committed'; head: string } | { kind: 'error'; detail: string; isSetup?: true }
 
-// One commit of the mod's, hooks off: every change to a tracked file, and of
-// the untracked files only those a run agent wrote (`run.written`) and the
-// repository does not ignore. What a command leaves behind (node_modules,
-// coverage, caches) stays out, and the user's own excludes still apply.
-// Commits run one at a time: an answer's and a timeout's would otherwise race
-// on the worktree's index.lock.
+// Commits run one at a time: an answer's and a timeout's would otherwise race on the worktree's index.lock.
 let committing: Promise<unknown> = Promise.resolve()
 
 export function commitAll(run: Run, message: string): Promise<Committed> {
@@ -540,8 +505,6 @@ async function commitOnce(run: Run, message: string): Promise<Committed> {
   if (run.written?.length) {
     const fresh = await wt(run, '--literal-pathspecs', 'ls-files', '-z', '--others', '--exclude-standard', '--', ...run.written)
     if (!fresh.ok) return { kind: 'error', detail: fresh.err }
-    // A recorded file that became a directory lists what is under it, which
-    // no agent wrote: only exact entries are added.
     const paths = fresh.out.split('\0').filter(p => run.written?.includes(p))
     const added = paths.length === 0 ? fresh : await wt(run, '--literal-pathspecs', 'add', '--', ...paths)
     if (!added.ok) return { kind: 'error', detail: added.err }
@@ -570,21 +533,17 @@ export async function ghReady(cwd: string): Promise<string | undefined> {
 
 export type GhRepo = { host: string; slug: string; path: string }
 
-// The GitHub repository origin names, which is where the mod pushes. Left to
-// itself gh picks an `upstream` or `github` remote, or its own default, and
-// would open the PR or read CI somewhere else.
 export async function ghRepo(run: Run): Promise<GhRepo | { error: string }> {
   const r = await git(run.repo, 'remote', 'get-url', 'origin')
-  // `scheme://[user@]host[:port]/owner/name` or scp-like `[user@]host:owner/name`.
   const m = r.ok ? (/^[a-z+]+:\/\/(?:[^@/]+@)?([^/:@]+)(?::\d+)?\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(r.out) ?? /^(?:[^@/:]+@)?([^/:@]+):([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(r.out)) : null
-  // A credential in the URL stays out of the reason the pane shows.
+  // The reason reaches the pane, so a credential in the URL is cut from it.
   if (!m) return { error: `origin (${r.ok ? r.out.replace(/\/\/[^@/]+@/, '//') : r.err}) does not name a GitHub repository gh can reach` }
   const [, host, owner, name] = m as unknown as [string, string, string, string]
   const path = `${owner}/${name}`
   return { host, path, slug: host === 'github.com' ? path : `${host}/${path}` }
 }
 
-// A gh call pinned to origin's repository.
+// Left to itself gh picks its own remote, so every gh call names origin's repository.
 async function ghOn(run: Run, args: string[], stdin?: string): Promise<Ran> {
   const target = await ghRepo(run)
   if ('error' in target) return { ok: false, code: -1, out: '', err: target.error }
@@ -593,8 +552,6 @@ async function ghOn(run: Run, args: string[], stdin?: string): Promise<Ran> {
 
 export type PrRef = { url: string; number: number }
 
-// Only an open PR from origin's own <branch> is the run's: a merged or closed
-// one is history, and a fork's PR of the same branch name is someone else's.
 export async function prView(run: Run): Promise<PrRef | undefined> {
   const r = await ghOn(run, ['pr', 'list', '--head', run.branch, '--state', 'open', '--json', 'url,number,isCrossRepository', '--limit', '10'])
   if (!r.ok) return undefined
@@ -610,9 +567,7 @@ export async function prView(run: Run): Promise<PrRef | undefined> {
 export async function prCreate(run: Run, title: string, body: string): Promise<PrRef | { error: string }> {
   const r = await ghOn(run, ['pr', 'create', '--base', run.base, '--head', run.branch, '--title', title, '--body-file', '-'], body)
   if (!r.ok) return { error: (r.err || r.out).slice(0, 1000) }
-  // gh prints the new PR's URL on its own line. Without one, the URL is not
-  // trusted: the pane renders the PR as a link, so only an https URL may stand.
-  // A PR the view finds is taken as gh reports its URL, without that check.
+  // gh prints the new PR's URL on its own line. The pane renders it as a link, so only an https URL stands.
   const url = r.out.split('\n').find(line => line.startsWith('https://'))
   const view = await prView(run)
   if (view) return view
@@ -649,8 +604,7 @@ export async function prChecks(run: Run, number: number): Promise<Check[] | { er
   }
 }
 
-// How many Actions workflows the repository defines; undefined when gh cannot
-// say. Zero is the one signal that no check will ever report.
+// Zero is the one signal that no check will ever report.
 export async function workflowCount(run: Run): Promise<number | undefined> {
   const target = await ghRepo(run)
   if ('error' in target) return undefined
@@ -658,8 +612,7 @@ export async function workflowCount(run: Run): Promise<number | undefined> {
   return r.ok && /^\d+$/.test(r.out) ? Number(r.out) : undefined
 }
 
-// The failed log of the pushed head only: a branch's latest failed run may
-// belong to an older head whose failure this head already fixed.
+// The pushed head only: the branch's latest failed run may belong to an older head whose failure this head already fixed.
 export async function failedLog(run: Run): Promise<string> {
   const runs = await ghOn(run, ['run', 'list', '--branch', run.branch, '--status', 'failure', '--limit', '20', '--json', 'databaseId,headSha'])
   let id: number | undefined

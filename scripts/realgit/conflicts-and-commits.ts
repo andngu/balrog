@@ -31,7 +31,6 @@ export async function conflictsAndCommits(h: any): Promise<void> {
   await g(seed, 'config', '--unset', 'commit.gpgsign')
   await g(seed, 'config', '--unset', 'gpg.program')
 
-  // A branch that does not conflict, for the commit checks.
   await sh(['sh', '-c', `git switch -q main && printf '*.lock -diff\\n' > .gitattributes && echo one > pkg.lock && git add . && git commit -qm "lockfile" && git push -q origin main`], seed)
   await sh(['sh', '-c', `git switch -qc feat3 main && printf '*.bin -diff\\n' >> .gitattributes && echo one > data.bin && git add . && git commit -qm "feat three" && git push -q origin feat3`], seed)
   const run = await rebased(seed, 'r5-commit')

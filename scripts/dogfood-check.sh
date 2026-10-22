@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Check scripts/dogfood.sh start, record and wait against a fake cache directory, with tmux, claude
-# and git clone replaced by stubs. Run from anywhere: scripts/dogfood-check.sh. Exits 1 when a check failed.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)

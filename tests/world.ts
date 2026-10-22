@@ -71,11 +71,8 @@ export type World = {
 
 export type Options = { dangling?: string[]; branch?: string; gh?: boolean; config?: string; branchConfig?: string; realPaths?: Record<string, string>; missing?: string[]; instantReview?: string; foreignReview?: true; origin?: string; legacy?: true }
 
-// `calls` holds each command with git's `-c key=value` pairs stripped, so a
-// rule or an assertion reads the command itself; `raw` keeps them.
 export const plain = (line: string) => line.replace(/^git( -c \S+)+ /, 'git ')
 
-// Tools the host runs with no ask of its own.
 export const HOST_ALLOWS = new Set(['TaskStop'])
 
 export function world($: Engine, on: On, options: Options = {}): World {
@@ -299,8 +296,6 @@ export async function start($: Engine, intent = 'add x'): Promise<string | undef
 export const complete = ($: Engine, agentId: string, text: string, reason: 'answer' | 'aborted' = 'answer') =>
   $.turn.complete({ agentId, answer: text, reason, durationMs: 1, isAborted: reason === 'aborted', turnId: `turn-${agentId}` })
 
-// A clean run spawns two agents: the reviewer, then the document fixer; test
-// and lint are the configured commands.
 export const passTwo = async ($: Engine): Promise<void> => {
   for (const id of ['agent-1', 'agent-2']) await complete($, id, answer([]))
 }
@@ -358,7 +353,6 @@ export const pressOnce = async ($: Engine, key: string): Promise<void> => {
   await ui.unmount()
 }
 
-// What a prompt says outside its untrusted sections: the part an agent reads as instructions.
 export const outside = (prompt: string) => prompt.replace(/<(untrusted-\w+)[\s\S]*?<\/\1>/g, '')
 
 export const EXCLUDING = `${CONFIG}review:\n  exclude:\n    - package-lock.json\n    - "dist/*"\n`

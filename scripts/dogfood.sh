@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Gate a branch with its own mod: host Claude Code in tmux with the branch cloned
-# and loaded as a plugin, so /no-mistakes runs the code under review.
+# Gate a branch with its own mod: clone the branch, host Claude Code in tmux with the clone loaded
+# as the plugin, and run /no-mistakes there.
 #
 #   dogfood.sh start <branch> [intent]   clone the branch, start the session, run /no-mistakes if an intent is given
 #   dogfood.sh send <branch> <text>      clear the chat input, type text, press Enter
@@ -19,8 +19,6 @@
 #
 # start never deletes an existing clone or session, only the temporary directory of a clone of
 # its own that failed. It refuses when the session or the clone already exists.
-# It answers the folder-trust dialog for the clone it makes, on purpose, so the
-# branch's plugin and hooks run without a human decision on that dialog.
 set -euo pipefail
 
 die() { echo "dogfood: $*" >&2; exit 1; }

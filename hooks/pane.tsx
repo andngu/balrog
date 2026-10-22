@@ -80,7 +80,6 @@ function row(run: Run, name: StepName, now: number): Row {
   const prev = STEP_ORDER[STEP_ORDER.indexOf(name) - 1]
   const above = prev === undefined ? undefined : run.steps[prev]
   const base = { name, isCurrent: name === currentStep(run), more: [] as string[] }
-  // A step still in flight has no last fact once the run ends; a parked one keeps its findings.
   if (run.outcome && (state.status === 'starting' || state.status === 'running' || state.status === 'fixing')) return { ...base, glyph: '-', detail: 'stopped' }
   const { glyph, color } = STATUS[state.status]
   const text = detail(state, { run, name, now })

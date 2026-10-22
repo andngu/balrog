@@ -16,7 +16,6 @@ const PIPELINE_LOG: Record<string, string> = {
   [FIXED_THRICE]: 'eeee555 fix(no-mistakes/test): make the test check pass\n a.ts | 1 +\ndddd444 fix(no-mistakes/recheck): fix round 1\n a.ts | 1 +\ncccc333 fix(no-mistakes/test): make the test check pass\n a.ts | 2 +-',
 }
 
-// A run at the recheck with one pipeline commit, the test fixer's; the recheck's reviewer is agent-4.
 async function toRecheck($: Engine, w: World, press?: 'approve' | 'skip'): Promise<void> {
   let failing = true
   w.rules.push(line => (line === 'sh -c npm test' ? { exitCode: failing ? 1 : 0, stdout: failing ? '1 failing' : '' } : undefined))

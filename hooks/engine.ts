@@ -8,7 +8,7 @@ import type { StepOutcome } from './steps'
 
 let pollTimer: { cancel: () => void } | undefined
 
-// Answers that arrive before their agent's id is written to the run.
+// turn.complete can fire before the spawn's id is written to the run, so such answers wait here.
 const early = new Map<string, { answer: string; reason: string }>()
 const EARLY_MAX = 8
 
@@ -18,10 +18,6 @@ async function showStatus(): Promise<void> {
 
 export type Owned = 'ours' | 'not-ours' | 'unknown'
 
-// Whether an agent is one this run spawned. A recorded agent stays ours after
-// the run ends (it may still be running). The agent list is consulted only
-// while a step that spawns is claimed and its agent's id is not yet recorded;
-// a lookup that throws then is `unknown`.
 export async function ownerOf(run: Run | null, agentId: string): Promise<Owned> {
   if (!run) return 'not-ours'
   if (run.agents.includes(agentId)) return 'ours'
@@ -81,15 +77,12 @@ export async function startRun(args: string): Promise<string> {
   await showStatus()
   await advance()
   const after = await io().readRun()
-  // The note can quote the branch (a conflict names its commit subjects), and
-  // this text reaches the main session's model, so it goes in as data.
   if (after?.id === id && after.outcome) return `no-mistakes run ${id} ${after.outcome}. ${UNTRUSTED_NOTE}\n${untrusted('run note', report(after))}`
   return `no-mistakes run ${id} started on ${facts.branch} (base ${facts.base}) in ${worktree.path}. The pane shows its progress.`
 }
 
 const where = (f: Finding) => (f.file === undefined ? '' : ` ${f.file}${f.line === undefined ? '' : `:${f.line}`}`)
 
-// What an agent or the branch wrote reaches the main session's model as data.
 export async function statusReport(): Promise<string> {
   const run = await io().readRun()
   if (!run) return 'No run yet. Start one with /no-mistakes [intent].'
@@ -126,9 +119,6 @@ type From = (state: StepState) => boolean
 
 const parked: From = s => s.status === 'parked'
 
-// One conditional write: the change lands only while the step is still in
-// the state the caller observed, and only once. Every transition goes here,
-// so here an agent the step moves away from is retired.
 async function claim(name: StepName, from: From, change: (run: Run) => Run): Promise<Run | undefined> {
   let won = false
   const run = await io().writeRun(r => {
@@ -223,8 +213,6 @@ async function advance(): Promise<void> {
   }
 }
 
-// An agent's answer: the mod commits whatever the agent changed in the
-// worktree, then the step judges the answer (a fix round re-runs the step).
 export async function onAgentAnswer(agentId: string, answer: string, reason: string): Promise<void> {
   const run = await io().readRun()
   if (!run || run.outcome) return
@@ -246,8 +234,6 @@ export async function onAgentAnswer(agentId: string, answer: string, reason: str
   }
   let outcome: StepOutcome
   const committed = await git.commitAll(run, commitMessage(name, state))
-  // Only the steps whose agent is asked for a findings block are read this way;
-  // each of them fails closed in its check too.
   const { agent } = STEP_DEFS[name]
   const parsed = state.status === 'running' && !state.reasked && agent !== undefined ? parseFindings(answer, name) : undefined
   if (committed.kind === 'error') {
@@ -264,9 +250,7 @@ export async function onAgentAnswer(agentId: string, answer: string, reason: str
   if ((await settle(name, outcome, mine)) === 'continue') await advance()
 }
 
-// A fresh agent, not the one that answered: the host resumes a finished agent
-// only when its type is offered to the user's model, and register.tsx hides
-// the mod's (proved on Claude Code 2.1.306 and 2.1.307).
+// The host resumes a finished agent only when its type is offered to the user's model, and register.tsx hides the mod's, so the re-ask goes to a fresh agent.
 async function handOver(name: StepName, type: string, agentId: string, error: string, answer: string): Promise<void> {
   const startedAt = await io().now()
   const claimed = await claim(name, s => agentOf(s) === agentId && s.status === 'running' && !s.reasked, r => setStep(r, name, { status: 'starting', startedAt }))
@@ -317,8 +301,6 @@ export async function press(verdict: Verdict | 'abort', select: readonly string[
   if (!name) return refused('The run is finishing; nothing is left to decide.')
   const state = run.steps[name]
   if (verdict === 'abort') {
-    // A push, PR or spawn may be in flight: removing the worktree under it
-    // would lose the effect. The owner of the claim finishes the abort.
     if (isClaimed(state)) {
       await io().writeRun(r => (r && !r.outcome && isClaimed(r.steps[name]) ? { ...r, abortRequested: true } : r))
       return { kind: 'abort-pending', text: `${name} is still starting; the run aborts as soon as it settles.` }
@@ -348,8 +330,6 @@ export async function press(verdict: Verdict | 'abort', select: readonly string[
   if (settled === 'lost') return lost(name)
   const what = verdict === 'approve' ? `Approved ${name} as is.` : `Skipped ${name}.`
   if (settled !== 'continue') return done(what)
-  // The next step runs in the background, as the pane's buttons start it: the
-  // reply returns before a step such as a test command has finished.
   void advance().catch(e => io().toast(`no-mistakes could not continue after ${name}: ${String(e)}`))
   return { kind: 'done', text: `${what} The run continues in the background; /no-mistakes-status shows where it is.` }
 }
@@ -377,8 +357,7 @@ async function tick(): Promise<void> {
   const now = await io().now()
   if (isAgentDriven(state) && now - state.startedAt > AGENT_TIMEOUT_MS) {
     const { agentId } = state
-    // The step is taken from the agent before it is stopped: the stop ends its
-    // turn as aborted, and that answer must find the step no longer its own.
+    // A stop ends the agent's turn as aborted, so the step is taken from the agent before the stop.
     const taken = await claim(name, s => agentOf(s) === agentId, r => setStep(r, name, { status: 'starting', startedAt: now }))
     if (!taken) return
     await stopAgent(agentId)
@@ -386,15 +365,12 @@ async function tick(): Promise<void> {
     if ((await stillRunning(taken)).includes(agentId)) {
       step = { status: 'failed', reason: `the ${name} agent ran 30 minutes without answering and could not be stopped; it may still write to the worktree, so the run stops here` }
     } else {
-      // What the agent changed is its step's, as if it had answered; left in
-      // the tree it would land in a later step's commit, or be put back by prepare.
       const committed = await git.commitAll(taken, commitMessage(name, state))
       step = committed.kind === 'error' ? { status: 'failed', reason: committed.isSetup ? `${name}: ${committed.detail}` : `${name}: the timed-out agent's edits could not be committed: ${committed.detail}` } : { status: 'parked', findings: [timeoutFinding(name)] }
     }
     await settle(name, { step }, isClaimed)
     return
   }
-  // A claim whose owner never settled it (the actor died mid-effect).
   const claimed = claimedAt(state)
   if (claimed !== undefined && now - claimed > AGENT_TIMEOUT_MS) {
     await settle(name, { step: { status: 'failed', reason: `${name} was left starting for 30 minutes; the effect may or may not have run` } }, isClaimed)
@@ -412,8 +388,6 @@ async function tick(): Promise<void> {
   if (state.status !== 'running' && state.status !== 'fixing' && !isClaimed(state)) stopPolling()
 }
 
-// A step still claimed after a restart lost the actor that owned it; the
-// effect may or may not have run, so it fails rather than runs again.
 export async function resume(): Promise<void> {
   const run = await io().readRun()
   if (!run) return
@@ -441,7 +415,6 @@ async function stillRunning(run: Run): Promise<string[]> {
 async function finish(outcome: Outcome, note: string): Promise<void> {
   stopPolling()
   early.clear()
-  // The outcome is claimed first, so two finishes make one cleanup.
   let won = false
   const run = await io().writeRun(r => {
     won = Boolean(r && !r.outcome)
@@ -456,8 +429,6 @@ async function finish(outcome: Outcome, note: string): Promise<void> {
   }
   for (const agentId of run.agents) await stopAgent(agentId)
   const running = await stillRunning(run)
-  // Edits nobody committed yet (an agent stopped mid-step) are kept as a
-  // commit of their own before the worktree goes.
   const wip = running.length === 0 ? await git.commitAll(run, 'wip(no-mistakes): uncommitted edits when the run ended') : { kind: 'clean' as const }
   const pinned = wip.kind === 'error' ? { kind: 'error' as const, detail: wip.detail } : await git.pinHead(run)
   if (pinned.kind === 'pinned') {

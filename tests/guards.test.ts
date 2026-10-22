@@ -109,7 +109,6 @@ test('item 4: a claim nobody settles is failed by the tick after the agent timeo
   const fetching = new Promise<void>(r => { reached = r })
   w.rules.push(async line => (line === FETCH_BASE ? (reached!(), await new Promise<Reply>(() => {})) : undefined))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  // The fetch never answers, so this call is torn down with the test, rejected.
   void $.command.run(command(PLUGIN, 'add x')).catch(() => undefined)
   await fetching
   expect(lastRun(w).steps.rebase).toMatchObject({ status: 'starting' })
@@ -384,7 +383,6 @@ test('R6-4: an answer racing the timeout never commits at the same time as it', 
   const w = world($, on)
   await start($)
   await complete($, 'agent-1', answer([]))
-  // A commit runs from its `git add -u` to its `git diff --cached --quiet`.
   let open = 0
   let most = 0
   let release: (() => void) | undefined
@@ -411,7 +409,6 @@ test('R6-4: an answer racing the timeout never commits at the same time as it', 
   await new Promise<void>(r => setTimeout(r, 20))
   release!()
   await answered
-  // Settled once the park's notification went out, the last thing a park does.
   for (let i = 0; i < 100 && w.notifies === notified; i++) await new Promise<void>(r => setTimeout(r, 5))
   expect(lastRun(w).steps.document).toMatchObject({ status: 'parked', findings: [{ id: 'document:timeout' }] })
   expect(w.calls.filter(c => c === 'git add -u')).toHaveLength(before + 2)

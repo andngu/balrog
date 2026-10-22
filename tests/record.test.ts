@@ -115,10 +115,8 @@ test('a run stored before the record existed (no recordDir) runs to its end with
   const run = lastRun(w)
   expect(run.outcome).toBe('passed')
   expect(run.recordDir).toBeUndefined()
-  // The store drops the recheck step, as an earlier version's run lacks it.
   const { recheck: _, ...legacySteps } = PASSED_STEPS
   expect(statuses(run)).toEqual(legacySteps)
-  // The seed is the one write: its run carries the recordDir the store then dropped.
   expect(w.writes.map(x => Object.values((JSON.parse(x.text) as Run).steps).every(s => s.status === 'pending'))).toEqual([true])
   expect(await say($, 'no-mistakes-status')).not.toContain('Record:')
 })

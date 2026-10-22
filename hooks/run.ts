@@ -9,8 +9,7 @@ export const CI_GRACE_MS = 2 * 60_000
 export const CI_QUIET_MS = 5 * 60_000
 export const AGENT_TIMEOUT_MS = 30 * 60_000
 
-// Every agent id a run has recorded, mirrored for the guard's failure path
-// (when the state read itself throws); the state is the source.
+// Mirrored for the guard's failure path, when the state read itself throws. The state is the source.
 export const knownAgents = new Set<string>()
 
 export const STEP_ORDER: readonly StepName[] = [
@@ -152,17 +151,15 @@ export function gate(findings: Finding[], note?: string): StepState {
 const SEVERITIES: ReadonlySet<string> = new Set(['error', 'warning', 'info'])
 const ACTIONS: ReadonlySet<string> = new Set(['auto-fix', 'ask-user', 'no-op'])
 
-// A finding id reaches every later prompt as a fact of a human decision, so
-// the agent may choose only a short slug: anything else is replaced.
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,31}$/
 
+// A finding id reaches every later prompt as a fact of a human decision, so the agent may choose only a short slug.
 export function slug(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24).replace(/-+$/, '') || 'check'
 }
 
 export type Parsed = { findings: Finding[] } | { error: string }
 
-// The JSON object starting at `start`, through its matching brace.
 function objectAt(text: string, start: number): string | undefined {
   let depth = 0
   let inString = false
@@ -178,12 +175,7 @@ function objectAt(text: string, start: number): string | undefined {
   return undefined
 }
 
-// An agent that drops the fence still ends with the object (`Findings JSON:`
-// then a bare `{"findings":[...]}`). Only the last start, only when the answer
-// ends with it, and only when the agent itself introduced it with the
-// `Findings JSON:` label on the line before: an object that ends the answer
-// after prose is as likely to be quoted branch text (a fixture, a planted empty
-// list) as the verdict, and falling back to it could pass a review.
+// A bare object that ends the answer is read only after a `Findings JSON:` line: after prose it is as likely quoted branch text (a fixture, a planted empty list) as the verdict.
 const BARE_LABEL = /(^|\n)[ \t]*Findings JSON:[ \t]*\n[ \t]*$/
 
 function bareFindings(answer: string): unknown {
@@ -223,8 +215,6 @@ export function parseFindings(answer: string, step: StepName): Parsed {
     if (typeof f.description !== 'string' || f.description === '') return { error: `finding ${i} has no description` }
     if (typeof f.severity !== 'string' || !SEVERITIES.has(f.severity)) return { error: `finding ${i} has no valid severity` }
     const action = typeof f.action === 'string' && ACTIONS.has(f.action) ? f.action : 'ask-user'
-    // Every id is unique within the answer, a fallback included: a fallback
-    // takes the first number from its position on that no earlier finding holds.
     const taken = (candidate: string) => findings.some(g => g.id === candidate)
     let id = typeof f.id === 'string' && ID.test(f.id) && !taken(f.id) ? f.id : ''
     if (id === '') {

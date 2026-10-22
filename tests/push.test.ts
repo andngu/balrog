@@ -215,8 +215,6 @@ test('item 4: a ci tick that lost the fix claim cannot settle over the placehold
   const spawnGate = new Promise<void>(r => { releaseSpawn = r })
   const sleep = (ms: number) => new Promise<void>(r => setTimeout(() => r(), ms))
   let polls = 0
-  // Both ticks read ci as running. The first sees a failure and claims the
-  // fix; the second sees a pass, but only after that claim has landed.
   w.rules.push(async line => {
     if (!line.startsWith('gh pr checks 7')) return undefined
     if (polls++ === 0) {

@@ -38,12 +38,9 @@ const DECISIONS = [
   { name: 'no-mistakes-abort', verdict: 'abort', description: 'Abort the no-mistakes run' },
 ] as const
 
-// A deny or an ask that stands on a settings rule, a classic hook or a
-// permission setting is the user's or their organization's, and nothing here
-// turns it into an allow.
+// A deny or an ask that carries a rule, a hook or a setting is the user's or their organization's.
 const isUsersVerdict = (verdict: ToolCheckResult) => verdict.decision !== 'allow' && (verdict.rule ?? verdict.hook ?? verdict.setting) !== undefined
 
-// A tool.call result that refuses the call: a deny, or an error the call came back with.
 const refused = (result: { deny?: unknown; isError?: unknown }) => result.deny !== undefined || result.isError === true
 
 export const register: Register = on => {
@@ -88,24 +85,14 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The deny half: a run agent never reads or writes outside the worktree or
-  // at its .git, and its shell runs nothing but the configured commands,
-  // whatever the user's own rules would allow. A guard that fails refuses
-  // only an agent the run is known to have spawned.
   on('tool.call', async ($, e, next) => {
     const owner = await ownerOfCall(await storedRun($), e.agentId)
     if (!owner) return next(e)
-    // Only the current step's agent acts: one whose step moved on (timed out
-    // and could not be stopped, say) keeps no access, nor any once the run ends.
     if (isRetired(owner.run, e.agentId!)) return { deny: 'no-mistakes: this agent\'s step is over, so it may not act in the run any more' }
     const call = asCall(e)
     const stat = (path: string) => $.fs.stat(path, { resolve: true })
     const reason = await judge(call, owner.run.worktree, owner.run.commands, stat)
     if (reason !== undefined) return { deny: `no-mistakes: ${reason}` }
-    // Recorded before the call: a record that fails then refuses the write
-    // (the catch below) instead of leaving a file the commit would not take.
-    // A call a later hook or setting refuses, or that throws, leaves no record
-    // behind: the file is then the user's, and the commit must not take it.
     const written = await writtenPath(call, owner.run.worktree, stat)
     if (written === undefined) return next(e)
     let added = false
@@ -126,10 +113,6 @@ export const register: Register = on => {
     return result
   }).catch(($, e, next) => (next.called || e.agentId === undefined || !knownAgents.has(e.agentId) ? next(e) : { deny: 'no-mistakes: the guard failed, so the call is refused' }))
 
-  // The allow half: the engine's own verdict comes first and a deny or ask
-  // of the user's stands. Only then does a run agent's call inside the worktree, or
-  // one of the configured commands, run without an ask. A guard that fails
-  // leaves the engine's verdict.
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
     if (e.agentId === undefined || isUsersVerdict(verdict) || e.ceiling !== undefined) return verdict
@@ -152,8 +135,6 @@ export const register: Register = on => {
   for (const { name, verdict } of DECISIONS) {
     on('command.run', { command: name }, async (_$, e) => {
       const named = e.args.split(/[\s,]+/).filter(id => id !== '')
-      // Only fix takes finding ids. The others would drop them without a word,
-      // so an approve or an abort typed with an id is refused, not carried out.
       if (verdict !== 'fix' && named.length > 0) return { text: `no-mistakes refused: /${name} takes no arguments, so ${named.join(', ')} was not used. Select findings in the pane, or use /no-mistakes-fix <ids>.` }
       const pressed = await press(verdict, named)
       return { text: pressed.kind === 'refused' ? `no-mistakes refused: ${pressed.reason}` : pressed.text }

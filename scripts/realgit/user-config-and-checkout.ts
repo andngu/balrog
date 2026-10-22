@@ -13,7 +13,6 @@ export async function userConfigAndCheckout(h: any): Promise<void> {
   writeFileSync(`${seed}/base.txt`, 'base\n')
   await sh(['sh', '-c', `git add . && git commit -qm base && git remote add origin ${origin} && git push -q origin main && git remote set-head origin main`], seed)
   await sh(['sh', '-c', `git switch -qc feat && printf '*.js -diff\\n' > .gitattributes && echo 'const secret = 1' > app.js && git add . && git commit -qm "feat one" && echo two > two.txt && git add . && git commit -qm "feat two" && git branch part1 HEAD~1 && git tag -a v1 -m v1 HEAD && git push -q origin feat`], seed)
-  // Base moves so the rebase rewrites both feat commits.
   await sh(['sh', '-c', `git switch -q main && echo more > more.txt && git add . && git commit -qm "main moves" && git push -q origin main && git switch -q feat`], seed)
   writeFileSync(`${home}/.gitignore_global`, '*.secret\n')
   await g(seed, 'config', '--global', 'rebase.updateRefs', 'true')
@@ -79,7 +78,6 @@ export async function userConfigAndCheckout(h: any): Promise<void> {
     await g(seed, 'branch', '-f', 'part1', part1)
   }
 
-  // Setup failures: no identity, and signing that is on and broken.
   await sh(['sh', '-c', 'git fetch -q origin && git reset -q --hard origin/feat'], seed)
   await sh(['sh', '-c', 'git switch -q main && echo again > again.txt && git add . && git commit -qm "main again" && git push -q origin main && git switch -q feat'], seed)
   await g(seed, 'config', 'user.useConfigOnly', 'true')
@@ -114,7 +112,6 @@ export async function userConfigAndCheckout(h: any): Promise<void> {
   await g(seed, 'config', '--unset', 'commit.gpgsign')
   await g(seed, 'config', '--unset', 'user.useConfigOnly')
 
-  // A block scalar in the config on origin/main fails the rebase step.
   await sh(['sh', '-c', `git switch -q main && printf 'commands:\\n  test: >-\\n    sh test.sh\\n' > .no-mistakes.yaml && git add . && git commit -qm "folded config" && git push -q origin main && git switch -q feat`], seed)
   {
     const bad = await runFor(seed, 'r4-config')

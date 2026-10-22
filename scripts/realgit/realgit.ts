@@ -1,5 +1,3 @@
-// Drives the mod's own git.ts and guard.ts against real git repositories.
-// Run: bun scripts/realgit/realgit.ts   (NM_MOD=<mod dir> to drive another copy)
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -14,7 +12,6 @@ const { isAllowed, judge } = await import(`${MOD}/hooks/guard.ts`)
 const root = mkdtempSync(`${tmpdir()}/nm-realgit-`)
 const home = `${root}/home`
 mkdirSync(home)
-// Identity comes from the environment unless a scenario drops it.
 let ident = true
 const IDENT = { GIT_AUTHOR_NAME: 'nm', GIT_AUTHOR_EMAIL: 'nm@x', GIT_COMMITTER_NAME: 'nm', GIT_COMMITTER_EMAIL: 'nm@x' }
 const sh = (argv: readonly string[], cwd: string, stdin?: string) =>
@@ -91,7 +88,6 @@ async function rebased(repo: string, label: string): Promise<Run> {
 const bash = (run: Run, command: string) => judge({ tool: 'Bash', input: { command } }, run.worktree, run.commands, stat)
 const allowed = (run: Run, tool: string, input: Record<string, unknown>) => isAllowed({ tool, input }, run.worktree, run.commands, stat)
 
-// Layout and mode.
 {
   const run = await runFor(seed, 'layout')
   check('L: worktree lives under $HOME/.cache/no-mistakes/<repo>-<hash>/<run>/wt', run.worktree.startsWith(`${home}/.cache/no-mistakes/seed-`) && run.worktree.endsWith('/layout/wt'), run.worktree)
@@ -100,7 +96,6 @@ const allowed = (run: Run, tool: string, input: Record<string, unknown>) => isAl
   await git.removeWorktree(run)
 }
 
-// Scenario A (#1): a teammate commit on origin/feat the local branch lacks.
 const mate = `${root}/mate`
 await sh(['git', 'clone', '-q', origin, mate], root)
 await sh(['sh', '-c', 'git switch -q feat && echo mate > c.txt && git add . && git commit -qm "teammate commit" && git push -q origin feat'], mate)
@@ -113,7 +108,6 @@ const mateSha = await out(['git', 'rev-parse', 'refs/heads/feat'], origin)
   await git.removeWorktree(run)
 }
 
-// Scenario B/C: local up to date, rebase passes, history moves.
 await sh(['git', 'pull', '-q', '--ff-only', 'origin', 'feat'], seed)
 {
   const run = await rebased(seed, 'b')
@@ -129,7 +123,6 @@ await sh(['git', 'pull', '-q', '--ff-only', 'origin', 'feat'], seed)
   await sh(['git', 'pull', '-q', '--ff-only', 'origin', 'feat'], seed)
 }
 
-// No prune: a stale remote-tracking ref of the user's survives the mod's fetch.
 await sh(['git', 'update-ref', 'refs/remotes/origin/old', 'HEAD'], seed)
 {
   const run = await rebased(seed, 'noprune')
@@ -138,7 +131,6 @@ await sh(['git', 'update-ref', 'refs/remotes/origin/old', 'HEAD'], seed)
   await git.removeWorktree(run)
 }
 
-// The mod's commit after a fixer edit: worktree only; prepare residue excluded.
 {
   const run = await rebased(seed, 'commit')
   const featBefore = await out(['git', 'rev-parse', 'feat'], seed)
@@ -164,7 +156,6 @@ await sh(['git', 'update-ref', 'refs/remotes/origin/old', 'HEAD'], seed)
   check('P: the recovery ref holds the fixer commit after removal', (await out(['git', 'show', '--stat', '--format=%s', `refs/no-mistakes/recover/${run.id}`], seed)).includes('fix.txt'))
 }
 
-// An excludesFile that does not exist (no prepare ran) does not break add.
 {
   const run = await rebased(seed, 'noexclude')
   writeFileSync(`${run.worktree}/e.txt`, 'e\n')
@@ -173,7 +164,6 @@ await sh(['git', 'update-ref', 'refs/remotes/origin/old', 'HEAD'], seed)
   await git.removeWorktree(run)
 }
 
-// Wip pin on abort with uncommitted edits.
 {
   const run = await rebased(seed, 'wip')
   writeFileSync(`${run.worktree}/half.txt`, 'half done\n')
@@ -184,7 +174,6 @@ await sh(['git', 'update-ref', 'refs/remotes/origin/old', 'HEAD'], seed)
   check('W: uncommitted edits become a wip commit that is pinned and survives removal', wip.kind === 'committed' && pinned.kind === 'pinned' && shown.startsWith('wip(no-mistakes)') && shown.includes('half.txt'), shown)
 }
 
-// Probe 1: rewrite <wt>/.git to the user's gitdir.
 {
   const run = await rebased(seed, 'gitdir')
   const featBefore = await out(['git', 'rev-parse', 'feat'], seed)
@@ -199,7 +188,6 @@ await sh(['git', 'update-ref', 'refs/remotes/origin/old', 'HEAD'], seed)
   await git.removeWorktree(run)
 }
 
-// Probe 2: a crafted in-worktree gitdir with fsmonitor and hooksPath.
 {
   const run = await rebased(seed, 'fsmon')
   mkdirSync(`${run.worktree}/evil/objects`, { recursive: true })
@@ -215,7 +203,6 @@ await sh(['git', 'update-ref', 'refs/remotes/origin/old', 'HEAD'], seed)
   check('G2: intact() refuses the crafted gitdir', broken !== undefined, broken)
   const committed = await git.commitAll(run, 'x')
   check('G2: commitAll refuses', committed.kind === 'error')
-  // Even a plain git status the mod might run with its flags executes nothing.
   await sh(['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', 'status'], run.worktree)
   await sh(['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', 'commit', '--allow-empty', '-qm', 'x'], run.worktree)
   check('G2: with the mod flags neither fsmonitor nor the hook ran', !existsSync(`${root}/PWNED`) && !existsSync(`${root}/HOOK_PWNED`))
@@ -225,7 +212,6 @@ await sh(['git', 'update-ref', 'refs/remotes/origin/old', 'HEAD'], seed)
   await git.removeWorktree(run)
 }
 
-// Probe 3 to 6: shell spellings. Everything that is not a configured command is refused.
 {
   const run = await rebased(seed, 'shell')
   const wt = run.worktree
@@ -264,7 +250,6 @@ await sh(['git', 'update-ref', 'refs/remotes/origin/old', 'HEAD'], seed)
   await git.removeWorktree(run)
 }
 
-// Husky: a branch-controlled relative core.hooksPath with post-checkout and pre-commit hooks.
 const husky = `${root}/husky`
 await sh(['git', 'clone', '-q', origin, husky], root)
 await sh(['sh', '-c', `git switch -q feat && git config core.hooksPath .husky && mkdir .husky && printf '#!/bin/sh\\necho "HOOK RAN: $0 in $(pwd)" >> ${root}/hook.log\\n' > .husky/post-checkout && cp .husky/post-checkout .husky/pre-commit && chmod +x .husky/* && git add -A && git commit -qm "add husky hooks"`], husky)
@@ -283,7 +268,6 @@ await sh(['rm', '-f', `${root}/hook.log`], root)
   await git.removeWorktree(run)
 }
 
-// A relative remote URL must still fetch and push from the cache-dir worktree.
 await sh(['git', 'remote', 'set-url', 'origin', '../origin.git'], seed)
 await sh(['sh', '-c', 'echo rel > g.txt && git add . && git commit -qm "relative remote"'], seed)
 {
