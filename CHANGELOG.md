@@ -4,6 +4,7 @@ Each entry names the pull request that made the change.
 
 ## Unreleased
 
+- A finding row in the pane shows its file relative to the worktree instead of the worktree's full path. `scripts/demo.sh` records the mod gating a toy repository and renders the README's demo gif.
 - In the terminal, the pane draws a balrog rising out of fire above the board. The fire banks to two rows while a step is parked and dies to still embers when the run ends.
 - The mod is named balrog. The commands are `/balrog`, `/balrog-fix`, `/balrog-approve`, `/balrog-skip`, `/balrog-abort`, and `/balrog-status`. The config file is `.balrog.yaml`, the cache directory `~/.cache/balrog/`, the commit prefix `type(balrog)`, and the realgit variable `BALROG_MOD`. The README opens with a banner and a paragraph naming kunchenguid/no-mistakes as the project this began as a port of, and where it diverges. The git history was reset to one commit at the rename, so the pull request numbers below belong to the history before it.
 - The README reads one section per mode and documents that `prepare`'s edits to tracked files are restored, and `BALROG_MOD` for the realgit script. A `CLAUDE.md` describes the architecture. Comments that restated the code or the README are gone (#20).

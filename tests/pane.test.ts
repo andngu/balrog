@@ -82,7 +82,7 @@ test('a running run draws its header, its steps and Abort alone; a parked one ad
   expect(lines.some(line => line.startsWith('fix='))).toBe(false)
 
   await complete($, 'agent-1', answer([
-    { id: 'r1', severity: 'error', action: 'auto-fix', file: 'a.ts', line: 3, description: 'off by one' },
+    { id: 'r1', severity: 'error', action: 'auto-fix', file: `${lastRun(w).worktree}/a.ts`, line: 3, description: 'off by one' },
     { id: 'r2', severity: 'warning', action: 'ask-user', description: 'is a 5s max delay right?' },
     { id: 'r3', severity: 'info', action: 'no-op', description: 'retry count is a literal' },
   ]))

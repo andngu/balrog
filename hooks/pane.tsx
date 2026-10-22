@@ -98,6 +98,9 @@ function row(run: Run, name: StepName, now: number): Row {
   }
 }
 
+// The reviewer names files by the absolute path it read, and the pane has no room for the worktree in every row.
+const inWorktree = (run: Run, file: string) => (file.startsWith(`${run.worktree}/`) ? file.slice(run.worktree.length + 1) : file)
+
 function board(run: Run, selected: string[], now: number): Board {
   const current = currentStep(run)
   const state = current && !run.outcome ? run.steps[current] : undefined
@@ -109,7 +112,7 @@ function board(run: Run, selected: string[], now: number): Board {
       isBlocking: isBlocking(f),
       severity: f.severity,
       action: ACTION[f.action],
-      where: f.file === undefined ? undefined : f.line === undefined ? f.file : `${f.file}:${f.line}`,
+      where: f.file === undefined ? undefined : f.line === undefined ? inWorktree(run, f.file) : `${inWorktree(run, f.file)}:${f.line}`,
       description: f.description.split('\n')[0] ?? '',
     }))
   let call: Board['call']
