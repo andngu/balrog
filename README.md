@@ -6,6 +6,10 @@ A Claude Code mod that gates a feature branch before it ships.
 
 Balrog began as a port of [kunchenguid/no-mistakes](https://github.com/kunchenguid/no-mistakes) (MIT) and keeps its shape: the step order, the disposable worktree, the `auto-fix` and `ask-user` findings, and the rule that a human decision outranks the intent. It parts from upstream on purpose. A recheck step reads what the pipeline itself committed, which upstream's design refuses, and hard guards on paths and commands stand where upstream steers by prompt. The code is its own, TypeScript against upstream's Go, and does not track upstream's behaviour.
 
+<p align="center"><img src="assets/demo.gif" alt="A recorded run: the reviewer parks on two findings, the fixer answers them, and the run passes" width="800"></p>
+
+The recording above is the mod gating a toy calculator: the reviewer parks on a missing test and an unhandled zero divisor, `/balrog-fix` sends both to the fixer, the re-review, test, document, and lint steps pass, and the branch is pushed. The origin there is a local bare repository, so the PR and CI steps skip.
+
 `/balrog [intent]` gates the current feature branch. It rebases the branch onto `origin/<default>`, then runs an adversarial review, the tests, a documentation pass, the linter, a recheck of what the pipeline itself committed, a push with a lease, a PR, and a CI watch. Every step runs in a disposable detached worktree under `~/.cache/balrog/` (mode 0700), never in your checkout. Blocking findings park the run in a pane where you fix, approve, skip, or abort. You can make the same calls from the chat with `/balrog-fix [finding ids]`, `/balrog-approve`, `/balrog-skip`, and `/balrog-abort`. `/balrog-status` reopens the pane and reports the run.
 
 ## Install
@@ -226,6 +230,7 @@ The suite passes on Claude Code 2.1.306 and 2.1.307. From 2.1.307 the testing ki
   - `conflicts-and-commits.ts`: a conflict is not called a signing failure, a commit takes only the paths a run agent wrote, and the commit list reads the attributes of the base.
   - `stat-and-origin-url.ts`: the diff stat under a `-diff` attribute, and how origin's URL names a GitHub repository.
 - `scripts/dogfood-check.sh`: checks that drive `dogfood.sh start`, `record`, and `wait` against a fake cache directory, with `tmux`, `claude`, and `git clone` replaced by stubs. Run `scripts/dogfood-check.sh`.
+- `scripts/demo.sh`: records the README's demo. `setup` makes a toy repository with a local bare origin and a branch for the reviewer to park on, `record` hosts Claude Code in tmux with this checkout loaded and captures the run with asciinema, and `render` warps the quiet stretches of the cast with `scripts/demo-warp.mjs` and renders `assets/demo.gif` with agg. `all` runs the three. The hosted session spends your own Claude quota.
 - `CHANGELOG.md`: one entry per release, each line naming its pull request. The version lives in `.claude-plugin/plugin.json`.
 - `LICENSE`: MIT.
 
