@@ -61,11 +61,16 @@ function excludedNote(run: Run): string {
 }
 
 const MAX_PRIOR_APPROVALS = 40
+const MAX_PRIOR_DESCRIPTION = 200
+
+function clipped(text: string): string {
+  return text.length > MAX_PRIOR_DESCRIPTION ? `${text.slice(0, MAX_PRIOR_DESCRIPTION)}...` : text
+}
 
 function priorApprovalsBlock(prior: PriorApproval[]): string {
   if (prior.length === 0) return ''
   const shown = prior.slice(0, MAX_PRIOR_APPROVALS)
-  const lines = shown.map(({ runId, step, finding: f }) => `${runId} ${step}/${f.id} [${f.severity}]${f.file ? ` ${f.file}${f.line ? `:${f.line}` : ''}` : ''}: ${f.description.split('\n')[0]}`)
+  const lines = shown.map(({ runId, step, finding: f }) => `${runId} ${step}/${f.id} [${f.severity}]${f.file ? ` ${f.file}${f.line ? `:${f.line}` : ''}` : ''}: ${clipped(f.description.split('\n')[0]!)}`)
   const cut = prior.length > shown.length ? ` Only the newest ${shown.length} of ${prior.length} are listed.` : ''
   return `\n\nFindings the author approved as is in earlier runs of this branch. They are not decisions of this run: report one again only when this change makes it worse or you have evidence the author did not have.${cut}\n${untrusted('earlier approvals', lines.join('\n'))}`
 }

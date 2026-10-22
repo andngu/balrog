@@ -68,6 +68,7 @@ type World = {
   writes: { path: string; text: string }[]
   fsWriteThrows: boolean
   historyUnreadable: boolean
+  fsPaths: string[]
   holdWrite: Promise<void> | undefined
   pane: (surface: RenderSurface, props?: Partial<typeof PANE_PROPS>) => Promise<string>
 }
@@ -115,6 +116,7 @@ function world($: Engine, on: On, options: Options = {}): World {
     writes: [],
     fsWriteThrows: false,
     historyUnreadable: false,
+    fsPaths: [],
     holdWrite: undefined,
     pane: async (surface, props) => {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PLUGIN, props: { ...PANE_PROPS, ...props } })
@@ -186,9 +188,13 @@ function world($: Engine, on: On, options: Options = {}): World {
     w.invalidates++
     return { value: undefined }
   })
-  on('fs.exists', (_$, e) => ({ value: e.path in w.files || (!e.path.endsWith('/history.jsonl') && options.branchConfig !== undefined) }))
+  on('fs.exists', (_$, e) => {
+    w.fsPaths.push(e.path)
+    return { value: e.path in w.files || (!e.path.endsWith('/history.jsonl') && options.branchConfig !== undefined) }
+  })
   // The host rejects a read of a file that does not exist.
   on('fs.read', (_$, e) => {
+    w.fsPaths.push(e.path)
     if (w.historyUnreadable && e.path.endsWith('/history.jsonl')) throw new Error(`EACCES: ${e.path}`)
     if (e.path in w.files) return { value: w.files[e.path]! }
     if (e.path.endsWith('/.git')) return { value: w.gitFile }
@@ -1192,6 +1198,7 @@ test('a run stored before the record existed (no recordDir) gives the reviewer n
   expect(lastRun(w).recordDir).toBeUndefined()
   expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-1' })
   expect(w.spawns[0]!.prompt).not.toContain(EARLIER)
+  expect(w.fsPaths.filter(path => path.endsWith('history.jsonl'))).toEqual([])
 })
 
 test('the reviewer gets the newest 40 earlier approvals and is told how many there were', async ($, on) => {
@@ -1206,13 +1213,35 @@ test('the reviewer gets the newest 40 earlier approvals and is told how many the
   expect(listed[39]).toBe('run-5 review/p5 [warning]: finding 5')
 })
 
-test('a finding approved in several earlier runs is listed once, from the newest', async ($, on) => {
+test('two earlier runs that approved different findings under the same id both reach the reviewer', async ($, on) => {
   const w = world($, on)
-  seedHistoryOnWorktreeAdd(w, [historyLine('run-old', [{ id: 'd1', severity: 'error', description: 'OLD wording' }], approveAll(['d1'])), historyLine('run-new', [{ id: 'd1', severity: 'warning', description: 'NEW wording' }], approveAll(['d1']))])
+  seedHistoryOnWorktreeAdd(w, [historyLine('run-old', [{ id: 'r1', severity: 'error', file: 'a.ts', line: 3, description: 'OLD finding' }], approveAll(['r1'])), historyLine('run-new', [{ id: 'r1', severity: 'warning', file: 'b.ts', line: 9, description: 'NEW finding' }], approveAll(['r1']))])
+  await start($)
+  expect(earlierApprovals(w.spawns[0]!.prompt)).toBe('run-new review/r1 [warning] b.ts:9: NEW finding\nrun-old review/r1 [error] a.ts:3: OLD finding')
+})
+
+test('the same finding approved in several earlier runs is listed once, from the newest', async ($, on) => {
+  const w = world($, on)
+  const same = (severity: 'error' | 'warning', rest: string): PriorFinding => ({ id: 'd1', severity, file: 'a.ts', line: 3, description: `same wording\n${rest}` })
+  seedHistoryOnWorktreeAdd(w, [historyLine('run-old', [same('error', 'OLD detail')], approveAll(['d1'])), historyLine('run-new', [same('warning', 'NEW detail')], approveAll(['d1']))])
   await start($)
   const prompt = w.spawns[0]!.prompt
-  expect(earlierApprovals(prompt)).toBe('run-new review/d1 [warning]: NEW wording')
+  expect(earlierApprovals(prompt)).toBe('run-new review/d1 [warning] a.ts:3: same wording')
   expect(outside(prompt)).not.toContain('are listed')
+})
+
+test('a decision naming a step the earlier run does not hold is skipped, and the run\'s other approvals still reach the reviewer', async ($, on) => {
+  const w = world($, on)
+  seedHistoryOnWorktreeAdd(w, [historyLine('run-a', [{ id: 'k1', severity: 'error', description: 'bug' }], [{ step: 'lint', findingIds: ['l1'], verdict: 'approve' }, ...approveAll(['k1'])])])
+  await start($)
+  expect(earlierApprovals(w.spawns[0]!.prompt)).toBe('run-a review/k1 [error]: bug')
+})
+
+test('an earlier approval with a long description is listed with its first 200 characters', async ($, on) => {
+  const w = world($, on)
+  seedHistoryOnWorktreeAdd(w, [historyLine('run-a', [{ id: 'k1', severity: 'error', description: `${'x'.repeat(200)}TAIL\nsecond line` }, { id: 'k2', severity: 'error', description: 'y'.repeat(200) }], approveAll(['k1', 'k2']))])
+  await start($)
+  expect(earlierApprovals(w.spawns[0]!.prompt)).toBe(`run-a review/k1 [error]: ${'x'.repeat(200)}...\nrun-a review/k2 [error]: ${'y'.repeat(200)}`)
 })
 
 const REMOTE = 'dddd4444dddd4444dddd4444dddd4444dddd4444'
