@@ -18,7 +18,7 @@ export type Finding = {
 export type StepState =
   | { status: 'pending' }
   | { status: 'starting'; startedAt: number }
-  // `reasked`: the agent's answer was unreadable and it was asked once more.
+  // `reasked`: the fresh agent asked after an unreadable answer; it gets no third try.
   | { status: 'running'; agentId?: string; startedAt: number; reasked?: true }
   | { status: 'fixing'; agentId?: string; round: number; startedAt: number }
   | { status: 'parked'; findings: Finding[] }

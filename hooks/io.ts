@@ -1,4 +1,4 @@
-import type { AgentInfo, AgentSpawnArgs, AgentSpawnResult, FsStat, ModelCompleteRequest, ModelCompleteResult, ModelForkResult, ProcessRunInit, ProcessRunResult, SessionSendResult, Timer, UiNotifyResult, UiOpenResult } from 'claude-code'
+import type { AgentInfo, AgentSpawnArgs, AgentSpawnResult, FsStat, ModelCompleteRequest, ModelCompleteResult, ModelForkResult, ProcessRunInit, ProcessRunResult, Timer, UiNotifyResult, UiOpenResult } from 'claude-code'
 
 import type { Run } from '../types'
 
@@ -9,7 +9,6 @@ export type Io = {
   spawn: (args: AgentSpawnArgs) => Promise<AgentSpawnResult>
   agents: () => Promise<AgentInfo[]>
   stop: (agentId: string) => Promise<unknown>
-  send: (agentId: string, text: string) => Promise<SessionSendResult>
   home: () => Promise<string | undefined>
   cacheHome: () => Promise<string | undefined>
   read: (path: string) => Promise<string>

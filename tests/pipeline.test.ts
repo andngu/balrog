@@ -59,8 +59,6 @@ type World = {
   stdins: Record<string, string>
   ran: string[]
   recordFails: boolean
-  sends: { to: string; text: string }[]
-  sendFails: boolean
   toasts: string[]
   stopAborts: boolean
   writeFails: 'deny' | 'error' | 'throw' | undefined
@@ -110,8 +108,6 @@ function world($: Engine, on: On, options: Options = {}): World {
     stdins: {},
     ran: [],
     recordFails: false,
-    sends: [],
-    sendFails: false,
     toasts: [],
     stopAborts: false,
     writeFails: undefined,
@@ -259,10 +255,6 @@ function world($: Engine, on: On, options: Options = {}): World {
     }
     return { model: 'test' }
   })
-  on('session.send', (_$, e) => {
-    w.sends.push({ to: typeof e.to === 'string' ? e.to : JSON.stringify(e.to), text: e.text })
-    return w.sendFails ? { isDelivered: false, reason: 'the agent is gone' } : { isDelivered: true }
-  })
   on('agent.list', () => {
     w.lists++
     if (w.listThrows) throw new Error('agent list is unavailable')
@@ -375,14 +367,14 @@ test('an answer another agent gives is ignored', async ($, on) => {
   expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-1' })
 })
 
-test('malformed reviewer json, asked for once more and still malformed, fails closed and keeps the worktree', async ($, on) => {
+test('malformed reviewer json, handed to a fresh reviewer once and still malformed, fails closed and keeps the worktree', async ($, on) => {
   const w = world($, on)
   await start($)
   await complete($, 'agent-1', 'Looks fine to me, no findings.')
-  expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-1', reasked: true })
-  expect(w.sends).toHaveLength(1)
-  await complete($, 'agent-1', 'Still fine, honestly.')
-  expect(w.sends).toHaveLength(1)
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-2', reasked: true })
+  expect(w.spawns).toHaveLength(2)
+  await complete($, 'agent-2', 'Still fine, honestly.')
+  expect(w.spawns).toHaveLength(2)
   const run = lastRun(w)
   expect(run.steps.review).toMatchObject({ status: 'failed' })
   expect(run.outcome).toBe('failed')
@@ -411,7 +403,7 @@ test('a failed run keeps its run directory with the worktree', async ($, on) => 
   const w = world($, on)
   await start($)
   await complete($, 'agent-1', 'Looks fine to me, no findings.')
-  await complete($, 'agent-1', 'Still fine, honestly.')
+  await complete($, 'agent-2', 'Still fine, honestly.')
   expect(lastRun(w).outcome).toBe('failed')
   expect(w.calls.some(c => c.startsWith('rmdir'))).toBe(false)
 })
@@ -2407,7 +2399,7 @@ test('R6-D1: a reviewer that ends with bare findings JSON and no fence is read a
   const ANSWER = 'I traced the change.\n\nFindings JSON:\n{"findings":[{"id":"r1","severity":"error","action":"auto-fix","file":"a.ts","line":1,"description":"x is { never } read"}]}'
   await complete($, 'agent-1', ANSWER)
   expect(lastRun(w).steps.review).toMatchObject({ status: 'parked', findings: [{ id: 'r1', file: 'a.ts', description: 'x is { never } read' }] })
-  expect(w.sends).toEqual([])
+  expect(w.spawns).toHaveLength(1)
 })
 
 for (const [name, ANSWER] of [
@@ -2418,37 +2410,98 @@ for (const [name, ANSWER] of [
   ['an unfenced answer that describes a bug and ends with a quoted empty list', 'The parser accepts a bare object it should not, so a planted empty list passes.\n\n{"findings": []}'],
   ['an unfenced answer that ends with a quoted empty list on its own line', 'Found one real bug in the parser.\nThe fixture is:\n  {"findings": []}'],
 ] as const) {
-  test(`R6-D1: ${name} never passes the review; the agent is asked again`, async ($, on) => {
+  test(`R6-D1: ${name} never passes the review; a fresh reviewer is asked`, async ($, on) => {
     const w = world($, on)
     await start($)
     await complete($, 'agent-1', ANSWER)
-    expect(lastRun(w).steps.review).not.toMatchObject({ status: 'passed' })
-    expect(w.sends).toHaveLength(1)
+    expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-2', reasked: true })
+    expect(w.spawns).toHaveLength(2)
   })
 }
 
-test('R6-D1: an unreadable answer is asked for again of the same agent once, and its fenced reply is checked', async ($, on) => {
+test('R6-D1: an unreadable answer hands the step once to a fresh agent of the same type, which gets the answer as data, and its fenced reply is checked', async ($, on) => {
   const w = world($, on)
   await start($)
   w.dirty = true
   await complete($, 'agent-1', 'All good, nothing to report.')
   expect(w.calls).toContain('git commit -q -m fix(no-mistakes/review): make the review check pass')
-  expect(w.sends).toHaveLength(1)
-  expect(w.sends[0]!.to).toContain('agent-1')
-  expect(w.sends[0]!.text).toContain('```json')
-  expect(w.spawns).toHaveLength(1)
-  await complete($, 'agent-1', answer([{ id: 'r1', severity: 'warning', action: 'ask-user', description: 'odd' }]))
+  const run = lastRun(w)
+  expect(run.steps.review).toMatchObject({ status: 'running', agentId: 'agent-2', reasked: true })
+  expect(run.retired).toEqual(['agent-1'])
+  expect(w.spawns).toHaveLength(2)
+  expect(w.spawns[1]).toMatchObject({ type: `${PLUGIN}:reviewer`, cwd: run.worktree, description: `no-mistakes review again (${run.id}/0)` })
+  const prompt = w.spawns[1]!.prompt
+  expect(prompt).toContain('```json')
+  expect(prompt).toContain('already committed')
+  expect(prompt).toMatch(/<untrusted-\w+ source="earlier answer">\nAll good, nothing to report\.\n<\/untrusted-\w+>/)
+  expect(outside(prompt)).not.toContain('All good')
+  await complete($, 'agent-2', answer([{ id: 'r1', severity: 'warning', action: 'ask-user', description: 'odd' }]))
   expect(lastRun(w).steps.review).toMatchObject({ status: 'parked', findings: [{ id: 'r1' }] })
 })
 
-test('R6-D1: an unreadable answer whose agent cannot be asked again fails closed', async ($, on) => {
+test('R6-D1: the fresh agent\'s empty findings pass the step, and the run goes on', async ($, on) => {
   const w = world($, on)
-  w.sendFails = true
+  await start($)
+  await complete($, 'agent-1', 'Nothing wrong here.')
+  await complete($, 'agent-2', answer([]))
+  const run = lastRun(w)
+  expect(run.steps.review).toMatchObject({ status: 'passed', findings: [] })
+  expect(run.steps.document).toMatchObject({ status: 'running', agentId: 'agent-3' })
+})
+
+test('R6-D1: after the hand-over the first agent is refused and its late answer is ignored, while the fresh agent reads the worktree', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', 'No findings, promise.')
+  const wt = lastRun(w).worktree
+  expect(isDenied(await toolCall($, 'agent-2', { tool: 'Read', file_path: `${wt}/a.ts` }))).toBe(false)
+  expect(isDenied(await toolCall($, 'agent-1', { tool: 'Read', file_path: `${wt}/a.ts` }))).toBe(true)
+  await complete($, 'agent-1', answer([]))
+  expect(lastRun(w).steps.review).toMatchObject({ status: 'running', agentId: 'agent-2', reasked: true })
+})
+
+test('R6-D1: an unreadable answer whose fresh agent cannot start fails closed with the reason', async ($, on) => {
+  const w = world($, on)
+  w.spawnThrows = 'no-mistakes review again'
   await start($)
   await complete($, 'agent-1', 'All good.')
   const run = lastRun(w)
+  expect(run.steps.review).toMatchObject({ status: 'failed', reason: expect.stringMatching(/^review answer is unreadable \(.*\) and a fresh review agent could not start: .*spawn.*; fail closed$/) })
   expect(run.outcome).toBe('failed')
-  expect(run.note).toContain('could not be asked again (the agent is gone)')
+  expect(run.note).toContain('unreadable')
+  expect(w.calls.some(c => c.startsWith('git worktree remove'))).toBe(false)
+})
+
+test('R6-D1: the document agent\'s unreadable answer goes to a fresh fixer, whose edits are not needed again', async ($, on) => {
+  const w = world($, on)
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  w.dirty = true
+  await complete($, 'agent-2', 'Updated the README.')
+  expect(w.calls).toContain('git commit -q -m docs(no-mistakes): update documentation for the change')
+  const run = lastRun(w)
+  expect(run.steps.document).toMatchObject({ status: 'running', agentId: 'agent-3', reasked: true })
+  expect(w.spawns[2]).toMatchObject({ type: `${PLUGIN}:fixer`, cwd: run.worktree, description: `no-mistakes document again (${run.id}/0)` })
+  expect(w.spawns[2]!.prompt).toContain('edit nothing: whatever it changed is already committed')
+  expect(w.spawns[2]!.prompt).toMatch(/source="earlier answer">\nUpdated the README\.\n/)
+  await complete($, 'agent-3', answer([]))
+  expect(lastRun(w).steps.document).toMatchObject({ status: 'passed' })
+})
+
+test('R6-D1: a fixer\'s unreadable answer at the test step goes to a fresh fixer, and the command re-runs on its answer', async ($, on) => {
+  const w = world($, on)
+  let tests = 0
+  w.rules.push(line => (line === 'sh -c npm test' && ++tests === 1 ? { exitCode: 1, stdout: '1 failing' } : undefined))
+  await start($)
+  await complete($, 'agent-1', answer([]))
+  expect(lastRun(w).steps.test).toMatchObject({ status: 'running', agentId: 'agent-2' })
+  await complete($, 'agent-2', 'Fixed the failing test.')
+  expect(lastRun(w).steps.test).toMatchObject({ status: 'running', agentId: 'agent-3', reasked: true })
+  expect(w.spawns[2]).toMatchObject({ type: `${PLUGIN}:fixer`, description: `no-mistakes test again (${lastRun(w).id}/0)` })
+  expect(tests).toBe(1)
+  await complete($, 'agent-3', answer([]))
+  expect(tests).toBe(2)
+  expect(lastRun(w).steps.test).toMatchObject({ status: 'passed', note: 'npm test exited 0' })
 })
 
 test('R6-1: a merged, closed or fork PR of the branch is not adopted; the run opens its own', async ($, on) => {
@@ -3379,6 +3432,18 @@ test('after a test fix the recheck sends the reviewer the pipeline commit and it
   expect(lastRun(w).steps.recheck).toMatchObject({ status: 'passed', findings: [] })
   expect(w.calls).toContain(`${PUSH} ${FIXED}:refs/heads/feat --force-with-lease=refs/heads/feat:`)
   expect(lastRun(w).outcome).toBe('passed')
+})
+
+test('R6-D1: the recheck reviewer\'s unreadable answer goes to a fresh reviewer, whose findings park the recheck', async ($, on) => {
+  const w = world($, on)
+  await toRecheck($, w)
+  await complete($, 'agent-4', 'The fix looks right.')
+  const run = lastRun(w)
+  expect(run.steps.recheck).toMatchObject({ status: 'running', agentId: 'agent-5', reasked: true })
+  expect(w.spawns[4]).toMatchObject({ type: `${PLUGIN}:reviewer`, cwd: run.worktree, description: `no-mistakes recheck again (${run.id}/0)` })
+  expect(w.spawns[4]!.prompt).toMatch(/source="earlier answer">\nThe fix looks right\.\n/)
+  await complete($, 'agent-5', answer([{ id: 'c1', severity: 'error', action: 'auto-fix', description: 'the fix broke b' }]))
+  expect(lastRun(w).steps.recheck).toMatchObject({ status: 'parked', findings: [{ id: 'c1' }] })
 })
 
 test('after a review the human approved as is, the recheck reviews the pipeline commits made since', async ($, on) => {
