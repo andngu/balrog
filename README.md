@@ -1,5 +1,3 @@
-<p align="center"><img src="assets/balrog.svg" alt="balrog: nothing passes the bridge" width="800"></p>
-
 # balrog
 
 A Claude Code mod that gates a feature branch before it ships.
